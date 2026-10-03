@@ -17,7 +17,7 @@ La Figura~\ref{fig:escenario} representa el escenario mediante un diagrama de de
 \subsection{Arquitectura y Comunicación entre Host y Guest}
 \label{sub:arquitectura}
 
-La solución se estructura en tres planos diferenciados. Un punto de entrada único, \texttt{main.sh}, recibe el nombre de la \vm{} objetivo, carga su archivo de configuración desde \texttt{config/} y coordina la ejecución; las bibliotecas de \texttt{lib/} concentran funciones reutilizables de orquestación, comunicación y almacenamiento; y los archivos de configuración por \vm{} declaran los parámetros que cambian entre máquinas: disco objetivo, punto de montaje, sistema de archivos y credenciales \parencite{bash_best_practices}. Con esta separación, el mismo algoritmo se aplica a \texttt{VM1} y \texttt{VM2} sin modificar el código, y las verificaciones con ShellCheck y BATS descritas en el Marco Teórico recaen sobre funciones pequeñas e independientes \parencite{shellcheck, bats_testing}. El lenguaje de implementación es Bash, justificado en la Subsección~\ref{sub:bash} por su disponibilidad nativa en el \host{} y por su acceso directo a la interfaz de línea de comandos \texttt{VBoxManage} \parencite{virtualbox_vboxmanage}.
+La solución se estructura en cuatro componentes. Un punto de entrada único, \texttt{vboxdisk}, recibe una orden (\texttt{apply}, \texttt{status} o \texttt{ld}) junto con el archivo declarativo que describe el estado deseado y coordina la ejecución; las bibliotecas de \texttt{src/lib/} concentran funciones reutilizables de orquestación, comunicación, estado y almacenamiento; el archivo \texttt{vdisk.yml} declara, en un bloque por \vm{}, los parámetros que cambian entre máquinas: disco objetivo, punto de montaje, sistema de archivos y credenciales; y el fichero de estado \texttt{state.lock} registra el último cambio realizado por el sistema sobre cada \vm{} y las huellas con las que se detectan modificaciones externas \parencite{bash_best_practices}. Con esta separación, la misma orden se aplica a \texttt{VM1} y \texttt{VM2} sin modificar el código, y las verificaciones con ShellCheck y BATS descritas en el Marco Teórico recaen sobre funciones pequeñas e independientes \parencite{shellcheck, bats_testing}. El lenguaje de implementación es Bash, justificado en la Subsección~\ref{sub:bash} por su disponibilidad nativa en el \host{} y por su acceso directo a la interfaz de línea de comandos \texttt{VBoxManage} \parencite{virtualbox_vboxmanage}.
 
 La comunicación con el invitado se establece con la Guest Control API (\texttt{VBoxManage guestcontrol}), mecanismo que satisface el requerimiento de utilizar las \guestadditions{} para la interacción \parencite{virtualbox_guestcontrol}. En este mecanismo el \host{} entrega las órdenes al hipervisor, éste las transporta al servicio \texttt{VBoxService} en ejecución dentro de la \vm{} y el resultado regresa por el mismo canal; ese trayecto no atraviesa la red en puente, de modo que la ejecución de comandos no depende de conocer de antemano la dirección IP del invitado \parencite{virtualbox_guestadditions, virtualbox_advanced_topics}. La autenticación se realiza con un usuario y una contraseña del propio sistema invitado, leídos del archivo de configuración antes de abrir la sesión, de manera que ninguna etapa solicita credenciales, comandos ni pulsaciones al usuario \parencite{virtualbox_guestcontrol}.
 
@@ -26,13 +26,15 @@ La dirección IP de la \vm{} sí se identifica de forma automática, porque es u
 \subsection{Algoritmo de Automatización (Idempotente)}
 \label{sub:algoritmo}
 
-El algoritmo se organiza en tres etapas que se ejecutan de forma secuencial y sin intervención del usuario: una etapa de preparación en el \host{}, una etapa de preparación del almacenamiento que se despacha al invitado con \texttt{VBoxManage guestcontrol} y una etapa de verificación y cierre que vuelve a ejecutarse en el \host{}. La Figura~\ref{fig:algoritmo} resume ese flujo en un diagrama de procesos con dos carriles, lo que permite distinguir en cada nodo qué equipo ejecuta la acción.
+El algoritmo se organiza en tres etapas que se ejecutan de forma secuencial y, en el camino normal, sin intervención del usuario: una etapa de preparación en el \host{}, una etapa de preparación del almacenamiento que se despacha al invitado con \texttt{VBoxManage guestcontrol} y una etapa de verificación y cierre que vuelve a ejecutarse en el \host{}. La Figura~\ref{fig:algoritmo} resume ese flujo en un diagrama de procesos con dos carriles, lo que permite distinguir en cada nodo qué equipo ejecuta la acción.
 
-En la etapa de preparación, el punto de entrada carga la configuración de la \vm{} objetivo, comprueba si está encendida y, de no estarlo, la enciende con \texttt{VBoxManage startvm} y aguarda la respuesta de \texttt{VBoxService}; después identifica su dirección IP en tiempo de ejecución, según se describió en la Subsección~\ref{sub:arquitectura}, y despacha las órdenes al invitado \parencite{virtualbox_guestcontrol, virtualbox_guestadditions}.
+La etapa de preparación comienza con la verificación declarativa: el punto de entrada carga el estado deseado de \texttt{vdisk.yml} y lo contrasta con el registro de \texttt{state.lock}. Si no hay cambios pendientes y la \vm{} permanece apagada, se verifica además que la huella del disco virtual, esto es, la fecha de modificación del fichero \texttt{.vdi} y la configuración reportada por \texttt{VBoxManage showvminfo}, coincida con la registrada tras la última aplicación; como un sistema invitado apagado no admite escrituras en su interior, una huella idéntica permite omitir la \vm{} sin abrir sesión en ella \parencite{idempotency_concept}. Si la huella cambió o la \vm{} está encendida, la solución realiza un sondeo de solo lectura en el invitado y lo compara con el registro: una discrepancia atribuible a una modificación externa detiene la operación sobre esa \vm{} y solicita confirmación antes de forzar la sincronización con \texttt{vdisk.yml}, por el riesgo de pérdida de datos, de manera que la corrección también puede hacerse manualmente. Estas confirmaciones se limitan a los caminos peligrosos, como la deriva detectada o el ciclo de encendido necesario para adjuntar un disco que falta, de modo que la ejecución habitual permanece desatendida \parencite{virtualbox_vboxmanage}.
+
+Superada la verificación declarativa, el punto de entrada comprueba si la \vm{} está encendida y, de no estarlo, la enciende con \texttt{VBoxManage startvm} y aguarda la respuesta de \texttt{VBoxService}; después identifica su dirección IP en tiempo de ejecución, según se describió en la Subsección~\ref{sub:arquitectura}, y despacha las órdenes al invitado \parencite{virtualbox_guestcontrol, virtualbox_guestadditions}.
 
 La etapa de almacenamiento es idempotente porque cada acción está precedida por una guarda que consulta el estado actual antes de modificarlo \parencite{idempotency_concept}. La primera guarda utiliza \texttt{lsblk} para identificar el disco adicional por su tamaño y comprobar si carece de tabla de particiones; solo en ese caso crea una tabla GPT con una partición mediante \texttt{parted} \parencite{linux_storage_management}. La segunda verifica, con \texttt{blkid}, si la partición ya contiene un sistema de archivos; de lo contrario ejecuta \texttt{mkfs.ext4} o \texttt{mkfs.xfs} según la configuración de la \vm{}. La tercera consulta \texttt{findmnt} y el contenido de \texttt{/etc/fstab} y, únicamente si el montaje no está declarado ni activo, obtiene el UUID, crea el punto de montaje con \texttt{mkdir -p}, añade la entrada por UUID para que el montaje persista entre reinicios y ejecuta \texttt{mount -a} \parencite{uuid_fstab, lsb_fhs}.
 
-Finalmente, la etapa de verificación confirma con \texttt{findmnt} y \texttt{df -h} que el almacenamiento quedó montado y registra el resultado: la ejecución termina con código~0 cuando la verificación es correcta y con código~1 cuando alguna guarda o verificación falla, de modo que el estado inconsistente se detecta de inmediato \parencite{bash_best_practices}. Como consecuencia de las guardas, re-ejecutar la solución sobre una \vm{} ya configurada no reformatea el disco ni duplica entradas en \texttt{/etc/fstab} y deja intactos los datos persistidos; la misma secuencia aplicada a \texttt{VM1} y \texttt{VM2} cambia únicamente los parámetros de entrada \parencite{idempotency_concept, ansible_up_running}.
+Finalmente, la etapa de verificación confirma con \texttt{findmnt} y \texttt{df -h} que el almacenamiento quedó montado y registra el resultado: la ejecución termina con código~0 cuando la verificación es correcta y con uno de los códigos de error de la Subsección~\ref{sub:cli} cuando alguna guarda o verificación falla, de modo que el estado inconsistente se detecta de inmediato y la causa queda distinguible en la salida \parencite{bash_best_practices}. Como consecuencia de las guardas, re-ejecutar la solución sobre una \vm{} ya configurada no reformatea el disco ni duplica entradas en \texttt{/etc/fstab} y deja intactos los datos persistidos; la misma secuencia aplicada a \texttt{VM1} y \texttt{VM2} cambia únicamente los parámetros de entrada \parencite{idempotency_concept, ansible_up_running}.
 
 \begin{figure}[H]
     \centering
@@ -40,3 +42,131 @@ Finalmente, la etapa de verificación confirma con \texttt{findmnt} y \texttt{df
     \caption{Diagrama de procesos de la automatización idempotente, con las etapas ejecutadas en el \host{} y en el sistema invitado}
     \label{fig:algoritmo}
 \end{figure}
+\subsection{Interfaz de la Solución}
+\label{sub:cli}
+
+La interfaz de la solución se apoya en un enfoque declarativo inspirado en Terraform: el estado deseado se declara en un archivo y un procedimiento único de convergencia compara lo declarado con la realidad antes de actuar \parencite{terraform}. Ese modelo se comparte con Terraform en la separación entre lo declarado y lo real, pero no en el alcance, pues Terraform administra el estado por proyectos, mientras que esta solución trabaja a nivel global, con un único fichero de estado, \texttt{state.lock}, que comparten todas las \vm{} descritas en el archivo declarativo, dado que el escenario corresponde a un solo conjunto de máquinas. Con el modelo de estado definido, la interfaz propiamente dicha se organiza en tres órdenes, de las que solo una modifica el sistema, como resume la Tabla~\ref{tab:comandos}.
+
+\begin{table}[H]
+    \centering
+    \caption{Órdenes de la interfaz de línea de comandos}
+    \label{tab:comandos}
+    \begin{tabular}{@{}lp{9.4cm}@{}}
+        \toprule
+        \textbf{Orden} & \textbf{Descripción} \\
+        \midrule
+        \texttt{vboxdisk apply} & Converge todas las \vm{} declaradas en \texttt{./vdisk.yml} hacia el estado deseado. Es la única orden que modifica el sistema y busca el archivo con su nombre estándar en el directorio actual; para usar otro archivo se indica con \texttt{-f}. \\
+        \texttt{vboxdisk apply -f archivo} & Ejecuta \texttt{apply} sobre el archivo indicado en lugar de \texttt{./vdisk.yml}. \\
+        \texttt{vboxdisk apply --dry-run} & Muestra el plan de cambios resultante de la verificación declarativa, sin modificar nada. \\
+        \texttt{vboxdisk apply -y} & Omite las confirmaciones de los caminos peligrosos para la ejecución no interactiva. \\
+        \texttt{vboxdisk status} & Lista las \vm{} del archivo con su estado de sincronización y su dirección IP actual si están encendidas, o la última registrada, con la nota de apagada, en caso contrario. \\
+        \texttt{vboxdisk ld nombre} & Muestra la tabla de particiones de la \vm{} indicada tal como quedó registrada en \texttt{state.lock}, con la fecha del registro. Solo lee y nunca enciende la \vm{}. \\
+        \texttt{vboxdisk --help} & Muestra la ayuda de la solución y termina. \\
+        \texttt{vboxdisk --version} & Muestra la versión instalada y termina. \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Durante \texttt{apply} la solución informa del avance mediante una barra de progreso por etapa y dos cronómetros: el tiempo hasta que la \vm{} queda disponible para recibir las órdenes de configuración, es decir, hasta que \texttt{VBoxService} responde, y el tiempo total de la ejecución, que se reporta en el resumen final. La barra, los registros y las advertencias se emiten por \texttt{stderr}, mientras que los datos, como la tabla de \texttt{status} o la salida de \texttt{ld}, salen por \texttt{stdout}, de modo que la salida de datos puede filtrarse con otros programas sin que el progreso la contamine. Cuando la salida no es un terminal, por ejemplo al redirigirla a un fichero para conservar la evidencia de una corrida, la barra se sustituye por una línea plana por etapa, de manera que el registro no contiene secuencias de control y queda listo para analizar los tiempos. En paralelo, la solución escribe esos mismos mensajes de avance y advertencia en una bitácora por ejecución, ubicada en \path{$XDG_DATA_HOME/vboxdisk/state/<datetime>.log}, que conserva siempre el formato plano con independencia de si la salida es un terminal; de este modo cada corrida deja una evidencia permanente con su marca de tiempo, sin que el usuario tenga que redirigir la salida manualmente.
+
+La solución distingue los siguientes códigos de salida:
+
+\begin{table}[H]
+    \centering
+    \caption{Códigos de salida de la solución}
+    \label{tab:codigos}
+    \begin{tabular}{@{}cp{11.6cm}@{}}
+        \toprule
+        \textbf{Código} & \textbf{Significado} \\
+        \midrule
+        0 & Todas las \vm{} convergieron correctamente o no hubo cambios que aplicar. \\
+        1 & Error de uso o de configuración: orden desconocida o archivo declarativo ausente, inválido o incompleto. \\
+        2 & Error de comunicación con la \vm{}: nombre inexistente, \texttt{VBoxService} sin responder o dirección IP no disponible. \\
+        3 & Error de almacenamiento o de verificación: disco no identificable o sistema de archivos y montaje no disponibles. \\
+        4 & Operación cancelada por el usuario en un camino peligroso. \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Cuando \texttt{apply} atiende varias \vm{}, el código final refleja el error de mayor severidad: los errores globales, los códigos~1 y~4, prevalecen sobre los particulares y, entre estos, el código~3 precede al~2.
+
+\subsection{Sintaxis del Archivo Declarativo}
+\label{sub:yml}
+
+El archivo \texttt{vdisk.yml} utiliza YAML, un formato de serialización legible por humanos construido sobre pares \texttt{clave: valor} \parencite{yaml_spec}, y se lee con la herramienta \texttt{yq}, declarada como dependencia de ejecución en la Subsección~\ref{sub:build}. La solución emplea únicamente tres reglas de esa sintaxis: las claves de primer nivel son los nombres de las \vm{} declaradas, cada \vm{} agrupa un bloque de pares \texttt{clave: valor} con sangría uniforme, y cualquier línea que comienza con \texttt{\#} es un comentario. Los valores numéricos se escriben sin comillas y las cadenas que contienen espacios o caracteres especiales se delimitan con comillas dobles. El siguiente listado muestra el archivo estándar con dos \vm{} que comparten la estructura y difieren en los parámetros de almacenamiento:
+
+\begin{lstlisting}[caption={Archivo declarativo estándar vdisk.yml}, label={lst:vdisk}]
+# vdisk.yml: estado deseado de las maquinas virtuales
+VM1:
+  vm_user: operador
+  vm_pass: ChangeMe123
+  disk_file: /home/jorge/.mvs/VM1/VM1-datos.vdi
+  disk_size_mb: 4096
+  mount_point: /mnt/datos
+  fs_type: ext4
+  fs_label: datos-vm1
+
+VM2:
+  vm_user: operador
+  vm_pass_file: /home/jorge/.secrets/vm2.pass
+  disk_file: /home/jorge/.mvs/VM2/VM2-datos.vdi
+  disk_size_mb: 4096
+  mount_point: /srv/datos
+  fs_type: xfs
+  fs_label: datos-vm2
+\end{lstlisting}
+
+El bloque de cada \vm{} solo puede declarar las variables reservadas que la solución reconoce, enumeradas en la Tabla~\ref{tab:claves}. Cada variable define un aspecto concreto de la convergencia, y cualquier clave ajena a ese conjunto se rechaza durante la validación.
+
+\begin{table}[H]
+    \centering
+    \caption{Variables reservadas del archivo declarativo}
+    \label{tab:claves}
+    \begin{tabular}{@{}llp{8.4cm}@{}}
+        \toprule
+        \textbf{Variable} & \textbf{Obligatoria} & \textbf{Significado} \\
+        \midrule
+        \texttt{vm\_user} & Sí & Usuario del invitado con el que Guest Control abre la sesión. \\
+        \texttt{vm\_pass} & Sí* & Contraseña de ese usuario, leída como valor literal. \\
+        \texttt{vm\_pass\_file} & Sí* & Ruta alternativa al fichero que contiene la contraseña. \\
+        \texttt{disk\_file} & Sí & Ruta del disco virtual \texttt{.vdi} en el \host{}. Si no existe, \texttt{apply} lo crea y lo adjunta a la \vm{}. \\
+        \texttt{disk\_size\_mb} & Sí & Tamaño del disco en megabytes, empleado para crearlo e identificarlo en el invitado. \\
+        \texttt{disk\_device} & No & Dispositivo en el invitado, por ejemplo \texttt{/dev/sdb}. Vacío significa autodetección por tamaño con \texttt{lsblk}. \\
+        \texttt{mount\_point} & Sí & Punto de montaje en el invitado. \\
+        \texttt{fs\_type} & Sí & Sistema de archivos, \texttt{ext4} o \texttt{xfs}. \\
+        \texttt{fs\_label} & No & Etiqueta del sistema de archivos. \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\noindent Se requiere al menos una de las variables \texttt{vm\_pass} y \texttt{vm\_pass\_file}.
+
+Al cargar el archivo, la solución valida que cada bloque contenga únicamente las variables de la Tabla~\ref{tab:claves}, que las obligatorias estén presentes y que la \vm{} declarada exista en el hipervisor; cualquier incumplimiento detiene la ejecución con código~1 antes de tocar el sistema. Los valores se resuelven con la siguiente precedencia: las opciones de línea de comandos, las variables de entorno con el prefijo \texttt{VBOXDISK\_}, el bloque de la \vm{} en \texttt{vdisk.yml} y, por último, los valores por defecto de la solución. Por ejemplo, la ruta de montaje de una \vm{} se obtiene con una consulta como \texttt{yq -r '.VM1.mount\_point' vdisk.yml}, lo que mantiene la lógica independiente de la máquina y satisface la reutilización sobre dos \vm{} con parámetros distintos.
+
+La ventaja de este diseño es la extensibilidad: incorporar una \vm{} nueva al proceso consiste únicamente en añadir un bloque con sus variables reservadas en \texttt{vdisk.yml}, sin modificar el código, la interfaz ni las pruebas de la solución, y las mismas órdenes la atienden junto con las ya declaradas. El archivo crece en línea con el número de máquinas, mientras que la lógica permanece invariable, que es precisamente lo que exige la reutilización sobre dos o más \vm{} del enunciado.
+
+\subsection{Instalación y Sistema de Construcción}
+\label{sub:build}
+
+La solución se construye e instala con GNU Make, herramienta estándar de los sistemas GNU/Linux cuyo modelo de objetivos y dependencias permite declarar que la instalación solo procede después de verificar el entorno y pasar las pruebas \parencite{gnu_make}. La orden \texttt{make install} encadena los objetivos \texttt{checkdeps}, \texttt{lint} y \texttt{test}: primero \texttt{checkdeps} comprueba en el \host{} las dependencias en tiempo de ejecución, que son Bash, \texttt{VBoxManage}, \texttt{yq} e \texttt{ip}, y las de desarrollo, que son GNU Make, ShellCheck y BATS, y lista las que falten sin instalar nada; después \texttt{lint} ejecuta ShellCheck sobre el punto de entrada y las bibliotecas y \texttt{test} ejecuta las pruebas con BATS; solo si todo resulta satisfactorio se copian los ficheros. Las dependencias del invitado, como las \guestadditions{}, \texttt{parted}, util-linux y los paquetes de ext4 o xfs, no pueden verificarse desde el \host{} y por eso se declaran como requisito de cada \vm{}.
+
+La instalación sigue las rutas de las variables de entorno XDG \parencite{xdg_spec} y no escribe fuera del área del usuario, de modo que no requiere privilegios:
+
+\begin{table}[H]
+    \centering
+    \caption{Rutas de instalación según las variables XDG}
+    \label{tab:instalacion}
+    \begin{tabular}{@{}lp{5.4cm}p{7.2cm}@{}}
+        \toprule
+        \textbf{Componente} & \textbf{Ruta} & \textbf{Contenido} \\
+        \midrule
+        Ejecutable & \path{~/.local/bin/vboxdisk} & Punto de entrada copiado desde \texttt{src/vboxdisk}. \\
+        Bibliotecas & \path{$XDG_DATA_HOME/vboxdisk/lib/} & Ficheros \texttt{src/lib/*.sh}. \\
+        Recursos & \path{$XDG_DATA_HOME/vboxdisk/} & Plantilla \texttt{vdisk.yml.example}. \\
+        Estado & \path{$XDG_DATA_HOME/vboxdisk/state.lock} & Fichero generado por la solución; no se instala ni se elimina. \\
+        Bitácoras & \path{$XDG_DATA_HOME/vboxdisk/state/<datetime>.log} & Una bitácora por ejecución de \texttt{apply}, escrita por la propia solución. \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Cuando \texttt{XDG\_DATA\_HOME} no está definida equivale a \path{~/.local/share}, que es su valor por defecto. El ejecutable localiza sus bibliotecas junto al propio fichero cuando corre desde el repositorio y en el directorio de datos cuando corre instalado, de manera que la misma orden sirve para desarrollo y después de \texttt{make install}. Además, el objetivo \texttt{install} asegura que el directorio \path{~/.local/bin} esté en la variable \texttt{PATH} del perfil del usuario: si la ruta no aparece en \path{~/.bashrc} o en \path{~/.zshrc}, la añade dentro de un bloque delimitado que \texttt{uninstall} vuelve a retirar, de modo que la orden \texttt{vboxdisk} queda disponible en cualquier sesión nueva sin privilegios y sin salir del área del usuario. El objetivo \texttt{uninstall} retira el ejecutable, las bibliotecas y ese bloque del \texttt{PATH}, y conserva el estado, las bitácoras y el archivo declarativo del usuario.

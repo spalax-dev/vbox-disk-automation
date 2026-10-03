@@ -2,13 +2,13 @@
 
 skinparam defaultFontName "Arimo"
 skinparam dpi 150
-skinparam nodesep 30
-skinparam ranksep 30
+skinparam nodesep 26
+skinparam ranksep 22
 skinparam defaultTextAlignment center
 
 |#E8F4FC|Equipo host|
 start
-:Cargar configuración de la VM;
+:Cargar vdisk.yml y state.lock (filtro 1);
 if (¿VM encendida?) then (no)
   :Encender (startvm) y esperar Guest Additions;
 else (sí)
@@ -35,7 +35,7 @@ if (¿Verificación correcta?) then (sí)
   :Registrar y salir con código 0;
   stop
 else (no)
-  :Reportar error y salir con código 1;
+  :Reportar error y salir (código 1 a 4);
   stop
 endif
 
