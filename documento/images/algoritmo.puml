@@ -1,0 +1,42 @@
+@startuml algoritmo
+
+skinparam defaultFontName "Arimo"
+skinparam dpi 150
+skinparam nodesep 30
+skinparam ranksep 30
+skinparam defaultTextAlignment center
+
+|#E8F4FC|Equipo host|
+start
+:Cargar configuración de la VM;
+if (¿VM encendida?) then (no)
+  :Encender (startvm) y esperar Guest Additions;
+else (sí)
+endif
+:Identificar IP y enviar órdenes\ncon VBoxManage guestcontrol;
+
+|#FFF8E1|Sistema invitado|
+if (¿Disco sin particiones\nsegún lsblk?) then (sí)
+  :parted: GPT con 1 partición;
+else (no)
+endif
+if (¿Sin sistema de archivos?) then (sí)
+  :mkfs.ext4 o mkfs.xfs;
+else (no)
+endif
+if (¿Montaje declarado en fstab\ny activo?) then (no)
+  :blkid → UUID, mkdir -p,\nentrada en fstab y mount -a;
+else (sí)
+endif
+
+|#E8F4FC|Equipo host|
+:Verificar con findmnt y df -h;
+if (¿Verificación correcta?) then (sí)
+  :Registrar y salir con código 0;
+  stop
+else (no)
+  :Reportar error y salir con código 1;
+  stop
+endif
+
+@enduml

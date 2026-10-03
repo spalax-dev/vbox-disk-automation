@@ -1,0 +1,4 @@
+$pdf_mode = 4;  # Use lualatex
+$lualatex = 'lualatex -interaction=nonstopmode -shell-escape %O %S';
+$bibtex = 'biber %O %S';
+$clean_ext = 'bbl bcf run.xml synctex.gz';

@@ -1,0 +1,108 @@
+\documentclass[12pt,letterpaper]{article}
+
+% ==================== PAQUETES ====================
+\usepackage[spanish]{babel}
+\usepackage{caption}
+\usepackage{csquotes} 
+\usepackage[style=apa]{biblatex}
+\usepackage{fontspec}
+\usepackage{microtype}
+\usepackage{float}
+\usepackage{graphicx}
+\usepackage{indentfirst}
+\usepackage{setspace}
+\usepackage{hyperref}
+\usepackage[margin=2.54cm]{geometry}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{enumitem}
+
+% ==================== CONFIGURACIÓN GENERAL ====================
+\setmainfont{Arimo}
+\doublespacing
+\addbibresource{ref.bib}
+\graphicspath{{images/}}
+
+% ==================== LISTINGS (CÓDIGO) ====================
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  numbers=left,
+  numberstyle=\tiny,
+  keywordstyle=\color{blue},
+  commentstyle=\color{green!60!black},
+  stringstyle=\color{red},
+  showstringspaces=false,
+  language=bash
+}
+
+% ==================== HYPERREF ====================
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  citecolor=black,
+  urlcolor=blue,
+  pdfauthor={Jorge Iván Acosta Aristizábal, [Compañero 1], [Compañero 2]},
+  pdftitle={Automatización de la configuración de almacenamiento en máquinas virtuales GNU/Linux desde el host con Oracle VM VirtualBox},
+  pdfsubject={Computación en la Nube - Parcial 1},
+  pdfkeywords={VirtualBox, Guest Additions, automatización, almacenamiento, GNU/Linux, cloud computing}
+}
+
+% ==================== MACROS PERSONALIZADAS ====================
+\newcommand{\vm}{\textit{VM}}
+\newcommand{\host}{\textit{host}}
+\newcommand{\guestadditions}{Guest Additions}
+
+\begin{document}
+
+% ==================== PORTADA ====================
+\thispagestyle{empty}
+\begin{center}
+    \textbf{Automatización de la configuración de almacenamiento en máquinas virtuales GNU/Linux desde el host con Oracle VM VirtualBox}\\[2cm]
+
+    \textbf{Estudiantes:}\\[0.5cm]
+    Jorge Iván Acosta Aristizábal \\ [0.5cm]
+    [Compañero 2] \\ [3cm]
+
+    \includegraphics[height=4cm]{logo.png}\\[3cm]
+
+    \textbf{Universidad del Quindío} \\
+    \textbf{Facultad Ingeniería} \\
+    \textbf{Ingeniería de Sistemas y Computación} \\
+    Computación en la Nube \\
+    Armenia, Quindío\\
+    Octubre del 2026
+\end{center}
+
+\newpage
+
+% ==================== CUERPO ====================
+\pagestyle{plain}
+\tableofcontents
+\newpage
+
+% ==================== INTRODUCCIÓN (INLINE) ====================
+\addcontentsline{toc}{section}{Introducción}
+
+\noindent En prácticas previas de la asignatura se realizó manualmente la preparación de un disco adicional para ser utilizado como almacenamiento de datos en una máquina virtual GNU/Linux. Dicha actividad implicó ejecutar secuencialmente los procedimientos de particionado, creación del sistema de archivos (ext4/xfs), montaje y configuración del montaje automático mediante \texttt{/etc/fstab} para garantizar persistencia \parencite{linux_storage_management}. Si bien estos pasos son fundamentales para la administración de almacenamiento, su ejecución manual resulta repetitiva, propensa a errores humanos y no escala cuando una organización debe aprovisionar almacenamiento en múltiples máquinas virtuales.
+
+El presente trabajo aborda la automatización completa de este proceso desde el sistema operativo \host{}, aprovechando las capacidades de Oracle VM VirtualBox. La solución permite que el \host{} inicie y prepare una \vm{}, establezca comunicación con el sistema operativo invitado mediante las \guestadditions{} y ejecute automáticamente las acciones necesarias para que el nuevo almacenamiento quede disponible sin intervención manual. Los requisitos fundamentales son la ejecución desatendida, sin ingreso de contraseñas, comandos interactivos ni pulsaciones de tecla; la reproducibilidad, con el mismo resultado en cada ejecución; la reutilización, aplicable a múltiples VMs con parámetros configurables; y la idempotencia, con re-ejecución segura sobre VMs ya configuradas sin pérdida de datos ni operaciones destructivas \parencite{idempotency_concept}.
+
+La comunicación \host{}-\vm{} se realiza a través de la Guest Control API (\texttt{VBoxManage guestcontrol}), mecanismo nativo de VirtualBox que no requiere configuración de red adicional más allá del modo puente (\textit{bridged networking}) para la obtención de la IP de la \vm{} \parencite{virtualbox_guestcontrol, virtualbox_networking}. La automatización se implementa en Bash para \host{} Linux/macOS, siguiendo prácticas robustas de scripting \parencite{bash_best_practices, shellcheck} y validada con el framework de testing BATS \parencite{bats_testing}. De este modo, el aprovisionamiento deja de depender de pasos manuales y se convierte en un procedimiento desatendido y verificable, cuyos resultados son consistentes entre ejecuciones y cuya repetición no compromete al sistema invitado.
+
+
+
+% ==================== CAPÍTULOS MODULARES ====================
+\input{conceptual_framework}
+\input{design}
+\input{implementation}
+\input{conclusions}
+
+% ==================== BIBLIOGRAFÍA ====================
+\newpage
+\printbibliography
+
+\end{document}

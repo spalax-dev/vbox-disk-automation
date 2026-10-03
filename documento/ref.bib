@@ -1,0 +1,217 @@
+% ==================== REFERENCIAS BIBLIOGRÁFICAS ====================
+
+% --- Documentación oficial Oracle VM VirtualBox ---
+
+@online{virtualbox_guestadditions,
+  title        = {Guest Additions},
+  author       = {{Oracle Corporation}},
+  year         = {2024},
+  url          = {https://docs.oracle.com/en/virtualization/virtualbox/7.2/user/guestadditions.html},
+  urldate      = {2026-10-02},
+  organization = {Oracle},
+  note         = {Documentación oficial: instalación, características y uso de Guest Additions}
+}
+
+@online{virtualbox_advanced_topics,
+  title        = {Advanced Topics},
+  author       = {{Oracle Corporation}},
+  year         = {2024},
+  url          = {https://docs.oracle.com/en/virtualization/virtualbox/7.2/user/AdvancedTopics.html},
+  urldate      = {2026-10-02},
+  organization = {Oracle},
+  note         = {Incluye: Guest Control API, VBoxManage guestcontrol, autenticación, comunicación host-guest}
+}
+
+@online{virtualbox_guestcontrol,
+  title        = {Guest Control: VBoxManage guestcontrol},
+  author       = {{Oracle Corporation}},
+  year         = {2024},
+  url          = {https://docs.oracle.com/en/virtualization/virtualbox/7.2/user/AdvancedTopics.html#guestcontrol},
+  urldate      = {2026-10-02},
+  organization = {Oracle},
+  note         = {Referencia de comandos para ejecutar programas, copiar archivos, crear directorios en el guest}
+}
+
+@online{virtualbox_networking,
+  title        = {Virtual Networking},
+  author       = {{Oracle Corporation}},
+  year         = {2024},
+  url          = {https://docs.oracle.com/en/virtualization/virtualbox/7.2/user/Network.html},
+  urldate      = {2026-10-02},
+  organization = {Oracle},
+  note         = {Modos de red: NAT, Puente (Bridged), Solo host, Red interna}
+}
+
+@online{virtualbox_vboxmanage,
+  title        = {VBoxManage Reference},
+  author       = {{Oracle Corporation}},
+  year         = {2024},
+  url          = {https://docs.oracle.com/en/virtualization/virtualbox/7.2/user/VBoxManageRef.html},
+  urldate      = {2026-10-02},
+  organization = {Oracle},
+  note         = {Referencia completa de línea de comandos: control de VMs, discos, snapshots, propiedades}
+}
+
+% --- Administración de almacenamiento en Linux ---
+
+@book{linux_storage_management,
+  title     = {Linux Storage Management},
+  author    = {Nemeth, Evi and Snyder, Garth and Hein, Trent R. and Whaley, Ben and Mackin, Dan},
+  publisher = {Addison-Wesley Professional},
+  year      = {2017},
+  edition   = {5},
+  isbn      = {978-0134277554},
+  note      = {Capítulos sobre discos, particiones, sistemas de archivos, LVM, RAID, fstab}
+}
+
+@online{kernel_block_devices,
+  title        = {Block Devices and Partitions},
+  author       = {{The Linux Kernel Archives}},
+  year         = {2024},
+  url          = {https://www.kernel.org/doc/html/latest/block/index.html},
+  urldate      = {2026-10-02},
+  organization = {Linux Kernel Organization},
+  note         = {Documentación del kernel: subsistema de bloques, naming de dispositivos (/dev/sd*, /dev/vd*, /dev/nvme*)}
+}
+
+@online{systemd_mount,
+  title        = {systemd.mount: Mount unit configuration},
+  author       = {{systemd Developers}},
+  year         = {2024},
+  url          = {https://www.freedesktop.org/software/systemd/man/latest/systemd.mount.html},
+  urldate      = {2026-10-02},
+  organization = {Freedesktop.org},
+  note         = {Unidades de montaje systemd, alternativa a /etc/fstab, dependencias y ordenamiento}
+}
+
+@online{uuid_fstab,
+  title        = {Using UUIDs in /etc/fstab},
+  author       = {{Ubuntu Community}},
+  year         = {2023},
+  url          = {https://help.ubuntu.com/community/UsingUUID},
+  urldate      = {2026-10-02},
+  organization = {Ubuntu Documentation},
+  note         = {Por qué usar UUID vs /dev/sdX: persistencia tras reinicios y cambios de hardware}
+}
+
+% --- Automatización, idempotencia y scripting (Bash + PowerShell) ---
+
+@book{ansible_up_running,
+  title     = {Ansible: Up and Running},
+  author    = {Lorin Hochstein and Moshe Zadka},
+  publisher = {O'Reilly Media},
+  year      = {2023},
+  edition   = {3},
+  isbn      = {9781098114086},
+  note      = {Capítulos sobre idempotencia, módulos declarativos, mejores prácticas de automatización}
+}
+
+@online{idempotency_concept,
+  title        = {Idempotence},
+  author       = {{Wikipedia Contributors}},
+  year         = {2024},
+  url          = {https://en.wikipedia.org/wiki/Idempotence},
+  urldate      = {2026-10-02},
+  organization = {Wikipedia},
+  note         = {Definición matemática y aplicación en DevOps/automatización de sistemas}
+}
+
+@online{bash_best_practices,
+  title        = {Bash Guide: Best Practices},
+  author       = {{GreyCat}},
+  year         = {2024},
+  url          = {https://mywiki.wooledge.org/BashGuide},
+  urldate      = {2026-10-02},
+  organization = {Bash Hackers Wiki},
+  note         = {Guía canónica: quoting, arrays, funciones, manejo de errores, set -euo pipefail}
+}
+
+@online{shellcheck,
+  title        = {ShellCheck: Shell script analysis tool},
+  author       = {Holen, Vidar},
+  year         = {2024},
+  url          = {https://www.shellcheck.net/},
+  urldate      = {2026-10-02},
+  note         = {Linter estático para detectar bugs y malas prácticas en scripts Shell}
+}
+
+@online{powershell_core_docs,
+  title        = {PowerShell Documentation},
+  author       = {{Microsoft}},
+  year         = {2024},
+  url          = {https://learn.microsoft.com/en-us/powershell/},
+  urldate      = {2026-10-02},
+  organization = {Microsoft},
+  note         = {Documentación oficial PowerShell Core (pwsh): cmdlets, remoting, manejo de errores, módulos}
+}
+
+@online{powershell_best_practices,
+  title        = {PowerShell Best Practices and Style Guide},
+  author       = {{PowerShell Community}},
+  year         = {2024},
+  url          = {https://github.com/PowerShell/PowerShell/blob/master/docs/learning-powershell/best-practices.md},
+  urldate      = {2026-10-02},
+  note         = {Guía de estilos, naming, error handling, pipeline, funciones avanzadas}
+}
+
+@online{pester_testing,
+  title        = {Pester: PowerShell Testing Framework},
+  author       = {{Pester Contributors}},
+  year         = {2024},
+  url          = {https://pester.dev/},
+  urldate      = {2026-10-02},
+  note         = {Framework BDD/TDD para PowerShell: assertions, mocking, code coverage, CI/CD integration}
+}
+
+@online{bats_testing,
+  title        = {Bats: Bash Automated Testing System},
+  author       = {{Bats Contributors}},
+  year         = {2024},
+  url          = {https://github.com/bats-core/bats-core},
+  urldate      = {2026-10-02},
+  note         = {Framework de testing para scripts Bash: assertions, setup/teardown, TAP output}
+}
+
+% --- SSH y autenticación sin contraseña ---
+
+@online{ssh_key_auth,
+  title        = {SSH Key-Based Authentication},
+  author       = {{OpenSSH Project}},
+  year         = {2024},
+  url          = {https://www.openssh.com/manual.html},
+  urldate      = {2026-10-02},
+  organization = {OpenSSH},
+  note         = {Generación de claves, ssh-agent, ssh-copy-id, authorized\_keys, configuración de servidor/cliente}
+}
+
+@online{ssh_config,
+  title        = {ssh\_config: client configuration},
+  author       = {{OpenSSH Project}},
+  year         = {2024},
+  url          = {https://man.openbsd.org/ssh_config.5},
+  urldate      = {2026-10-02},
+  organization = {OpenBSD},
+  note         = {Opciones: StrictHostKeyChecking y ConnectTimeout}
+}
+
+% --- Estándares y normas ---
+
+@standard{posix_shell,
+  title        = {IEEE Std 1003.1-2017: Shell Command Language},
+  author       = {{IEEE and The Open Group}},
+  year         = {2018},
+  url          = {https://pubs.opengroup.org/onlinepubs/9699919799/utilities/V3_chap02.html},
+  urldate      = {2026-10-02},
+  organization = {The Open Group},
+  note         = {Especificación POSIX del lenguaje de comandos Shell (sh), base de portabilidad}
+}
+
+@standard{lsb_fhs,
+  title        = {Filesystem Hierarchy Standard (FHS) 3.0},
+  author       = {{Linux Foundation}},
+  year         = {2015},
+  url          = {https://refspecs.linuxfoundation.org/fhs.shtml},
+  urldate      = {2026-10-02},
+  organization = {Linux Foundation},
+  note         = {Estándar de jerarquía de sistemas de archivos: puntos de montaje estándar (/mnt, /media, /opt, /srv)}
+}

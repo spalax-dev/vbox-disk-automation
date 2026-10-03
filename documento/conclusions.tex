@@ -1,0 +1,47 @@
+% ==================== CONCLUSIONES ====================
+\section{Conclusiones}
+
+% TODO: Redactar conclusiones cubriendo los siguientes puntos:
+
+\subsection{Logros Alcanzados}
+% - Se desarrolló una solución de automatización completa que configura almacenamiento adicional
+%   en máquinas virtuales GNU/Linux desde el host usando Oracle VM VirtualBox.
+% - La solución es automática (sin intervención manual), reproducible (mismo resultado en cada ejecución)
+%   y reutilizable (probada en al menos 2 VMs con parámetros distintos).
+% - Se logró comunicación host-guest mediante [Guest Control API / SSH] sin requerir ingreso
+%   de contraseñas ni comandos manuales durante la ejecución.
+% - El algoritmo es idempotente: re-ejecutar la solución sobre una VM ya configurada no destruye
+%   datos, no reformatea el disco, ni duplica entradas en \texttt{/etc/fstab}.
+
+\subsection{Cumplimiento de Requisitos del Parcial}
+% \begin{itemize}
+%     \item \textbf{Comunicación host-guest (3.1):} Implementada vía [mecanismo], con obtención
+%           automática de IP y red en modo puente.
+%     \item \textbf{Automatización completa (3.2):} Cero intervención manual: el script/programa
+%           maneja todo el flujo.
+%     \item \textbf{Preparación de almacenamiento (3.3):} Particionado, FS, montaje, fstab automatizados.
+%     \item \textbf{Ejecución repetida / idempotencia (3.4):} Verificada experimentalmente (prueba 5).
+%     \item \textbf{Aplicación a múltiples VMs (3.5):} Probado en VM1 y VM2 con configuración parametrizada.
+%     \item \textbf{Tiempo de ejecución (3.6):} Medido experimentalmente [X ejecuciones, promedio Y segundos].
+%     \item \textbf{Tecnología (4):} Desarrollado en [Bash].
+%     \item \textbf{Pruebas (5):} 6 casos cubiertos con evidencias documentadas.
+%     \item \textbf{Escenario (6):} Diagrama y descripción en Sección 3.1.
+% \end{itemize}
+
+\subsection{Limitaciones Identificadas}
+% - La solución asume Guest Additions instaladas y funcionando en la VM.
+% - Requiere red en modo puente configurada y accesible.
+% - Diseñada para un único disco adicional por VM (no maneja múltiples discos, LVM, RAID).
+% - Probada en [lista de SO: Ubuntu 22.04, Debian 12, etc.]; otros SO pueden requerir ajustes.
+% - Autenticación: credenciales/claves gestionadas en archivo de config (considerar vault/secrets para producción).
+% - No incluye manejo de discos ya particionados con datos (asume disco vacío o reutilizable).
+
+\subsection{Trabajo Futuro}
+% - Soporte para LVM (volúmenes lógicos, redimensionamiento en caliente).
+% - Manejo de múltiples discos adicionales por VM.
+% - Integración con pipeline CI/CD (GitHub Actions, GitLab CI) para aprovisionamiento automático.
+% - Soporte para otras plataformas: VMware, KVM/libvirt, Hyper-V.
+% - Interfaz gráfica / TUI para gestión de fleet de VMs.
+% - Uso de herramientas de configuración declarativa (Ansible, Terraform) como alternativa.
+% - Mejora de seguridad: rotación de claves, certificados, auditoría de acciones.
+% - Métricas y observabilidad (Prometheus, logging centralizado).

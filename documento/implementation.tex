@@ -1,0 +1,83 @@
+% ==================== IMPLEMENTACIÓN ====================
+\section{Implementación}
+
+\subsection{Estructura del Código}
+% TODO: Describir organización de archivos/scripts.
+% Ejemplo:
+% \begin{itemize}
+%     \item \texttt{main.sh}: punto de entrada
+%     \item \texttt{lib/common.sh}: funciones compartidas (logging, validación, ejecución remota)
+%     \item \texttt{lib/storage.sh}: funciones de almacenamiento (particionar, formatear, montar, fstab)
+%     \item \texttt{config/vm1.conf}, \texttt{config/vm2.conf}: parámetros por VM
+% \end{itemize}
+% Explicar criterio de modularidad y reutilización.
+
+\subsection{Script / Programa Principal}
+% TODO: Incluir fragmentos clave con \lstinputlisting.
+% \lstinputlisting[caption={Script principal: detección de IP y orquestación}, label={lst:main}]{../scripts/main.sh}
+% \lstinputlisting[caption={Funciones de almacenamiento idempotentes}, label={lst:storage}]{../scripts/lib/storage.sh}
+%
+% Explicar secciones clave:
+% - Parseo de argumentos / lectura de configuración
+% - Detección automática de IP de la VM
+% - Establecimiento de comunicación (Guest Control o SSH)
+% - Ejecución remota de comandos de preparación de almacenamiento
+% - Verificaciones de idempotencia en cada paso
+% - Manejo de salida y códigos de error
+
+\subsection{Parametrización para Múltiples VMs}
+% TODO: Explicar qué parámetros varían entre VMs y cómo se gestionan.
+% Parámetros variables:
+% - IP / hostname de la VM
+% - Usuario para conexión (root o usuario con sudo)
+% - Dispositivo de disco objetivo (ej. /dev/sdb, /dev/vdb)
+% - Punto de montaje deseado (ej. /mnt/datos, /data)
+% - Tipo de sistema de archivos (ext4, xfs)
+% - Credenciales / clave SSH
+%
+% Estrategia: archivo de configuración por VM (INI, YAML, JSON, o .env) o variables de entorno.
+% Ejemplo de archivo config:
+% \begin{verbatim}
+% VM_IP=192.168.1.50
+% VM_USER=admin
+% DISK_DEVICE=/dev/sdb
+% MOUNT_POINT=/mnt/datos
+% FS_TYPE=ext4
+% \end{verbatim}
+
+\subsection{Manejo de Errores y Casos Edge}
+% TODO: Documentar estrategias de robustez.
+% - Timeouts en conexión y comandos remotos
+% - Reintentos con backoff (ej. esperar a que Guest Additions estén listas)
+% - Validaciones previas: VM encendida, red accesible, disco existe, espacio suficiente
+% - Códigos de salida significativos (0=ok, 1=error config, 2=error conexión, 3=error almacenamiento)
+% - Logging estructurado (timestamp, nivel, mensaje) a archivo y stdout
+% - Limpieza en caso de fallo parcial (no dejar sistema en estado inconsistente)
+
+\subsection{Evidencias de Pruebas}
+% TODO: Completar tabla con las 6 pruebas requeridas por el enunciado (punto 5).
+% Para cada prueba: condición inicial, procedimiento, resultado esperado, resultado obtenido, evidencia.
+%
+% \begin{longtable}{@{}p{0.5cm}p{2.5cm}p{2.5cm}p{3cm}p{2.5cm}p{2.5cm}p{2.5cm}@{}}
+% \toprule
+% \textbf{ID} & \textbf{Prueba} & \textbf{Condición Inicial} & \textbf{Procedimiento} & \textbf{Resultado Esperado} & \textbf{Resultado Obtenido} & \textbf{Evidencia} \\
+% \midrule
+% \endhead
+% 1 & Configuración inicial VM1 & VM1 sin disco configurado, encendida, Guest Additions OK & Ejecutar solución contra VM1 & Disco particionado, formateado, montado en /mnt/datos, entrada en fstab & [Pendiente] & Captura terminal / log \\
+% 2 & Configuración inicial VM2 & VM2 sin disco configurado, encendida, Guest Additions OK & Ejecutar solución contra VM2 & Mismo resultado que VM1, parámetros distintos & [Pendiente] & Captura terminal / log \\
+% 3 & Disponibilidad almacenamiento & Proceso completado en VM1 & \texttt{df -h}, \texttt{lsblk}, escribir archivo prueba & Almacenamiento accesible, escribible, con espacio esperado & [Pendiente] & Captura \texttt{df -h}, archivo creado \\
+% 4 & Persistencia tras reboot & VM1 con almacenamiento configurado & Reiniciar VM1 (\texttt{reboot}), verificar montaje & Almacenamiento montado automáticamente tras reinicio & [Pendiente] & Captura \texttt{findmnt} post-reboot \\
+% 5 & Re-ejecución en VM configurada & VM1 ya configurada (prueba 1) & Ejecutar solución nuevamente sobre VM1 & Sin pérdida de datos, sin reformatear, sin duplicar fstab, salida exitosa & [Pendiente] & Log ejecución, \texttt{blkid} sin cambios \\
+% 6 & Condición de fallo & VM apagada / sin Guest Additions / disco inexistente & Ejecutar solución & Error controlado, mensaje claro, código salida ≠ 0, sin cambios en sistema & [Pendiente] & Captura error, log \\
+% \bottomrule
+% \caption{Resumen de pruebas ejecutadas y evidencias}
+% \label{tab:pruebas}
+% \end{longtable}
+%
+% Adjuntar evidencias como capturas de pantalla en \texttt{images/} y referenciarlas:
+% \begin{figure}[H]
+%     \centering
+%     \includegraphics[width=0.8\textwidth]{evidencia_prueba1.png}
+%     \caption{Evidencia prueba 1: configuración inicial VM1}
+%     \label{fig:evidencia1}
+% \end{figure}

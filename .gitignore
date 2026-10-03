@@ -1,0 +1,15 @@
+# Artefactos de LaTeX / latexmk
+*.aux
+*.log
+*.out
+*.toc
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.run.xml
+*.synctex.gz
+
+# Sistema
+.DS_Store
