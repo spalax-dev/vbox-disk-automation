@@ -1,0 +1,6 @@
+VM1:
+  vm_user: debian
+  disk_file: /no/existe/VM1-datos.vdi
+  disk_size_mb: 4096
+  mount_point: /mnt/datos
+  fs_type: ext4

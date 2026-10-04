@@ -2,6 +2,7 @@
 \section{Diseño de la Solución}
 
 \subsection{Escenario de Aplicación}
+\label{sub:escenario}
 
 El escenario de trabajo lo integra un equipo \host{} que ejecuta GNU/Linux con Oracle VM VirtualBox~7.2 y con la solución en Bash instalada, junto con dos máquinas virtuales GNU/Linux llamadas \texttt{VM1} y \texttt{VM2}, que comparten el mismo sistema invitado, Debian~13 (trixie), pero se configuran con parámetros distintos. El \host{} participa en la red local a través de una de sus interfaces físicas. En este escenario esa interfaz es \texttt{enp2s0}, aunque el nombre depende de la topología de cada equipo. Cada \vm{} posee una interfaz de red en modo puente que la conecta a la red local \texttt{192.168.1.0/24} y que en el invitado se denota \texttt{enp0s3}. Tal designación resulta del controlador y del orden de los adaptadores, de modo que, igual que las direcciones, constituye un valor del escenario y no un dato del que la solución dependa. En el modo puente la dirección tampoco la fija la \vm{}, sino que la ofrece el servidor DHCP de la red local, de modo que no puede predecirse a partir de la configuración del escenario \parencite{virtualbox_networking}. El entorno de pruebas asigna \texttt{192.168.1.51} a \texttt{VM1}, \texttt{192.168.1.52} a \texttt{VM2} y \texttt{192.168.1.10} al \host{}. Ese plan describe únicamente el entorno y no constituye una premisa de la solución, la cual identifica la dirección en tiempo de ejecución, tal como se detalla en la Subsección~\ref{sub:arquitectura}. Asimismo, ambas cuentan con un disco virtual adicional (\texttt{.vdi}) que la automatización deja montado como almacenamiento de datos: \texttt{/mnt/datos} con ext4 en la primera y \texttt{/srv/datos} con xfs en la segunda \parencite{linux_storage_management}. La comunicación entre el \host{} y cada \vm{} se realiza con la Guest Control API, que se apoya en las \guestadditions{} instaladas en el invitado \parencite{virtualbox_guestcontrol}.
 
@@ -80,8 +81,8 @@ La solución distingue los siguientes códigos de salida:
         \textbf{Código} & \textbf{Significado} \\
         \midrule
         0 & Todas las \vm{} convergieron correctamente o no hubo cambios que aplicar. \\
-        1 & Error de uso o de configuración: orden desconocida o archivo declarativo ausente, inválido o incompleto. \\
-        2 & Error de comunicación con la \vm{}: nombre inexistente, \texttt{VBoxService} sin responder o dirección IP no disponible. \\
+        1 & Error de uso o de configuración: orden desconocida, \vm{} declarada que no existe en el archivo o en el hipervisor, o archivo declarativo ausente, inválido o incompleto. \\
+        2 & Error de comunicación con la \vm{}: \texttt{VBoxService} sin responder o dirección IP no disponible. \\
         3 & Error de almacenamiento o de verificación: disco no identificable o sistema de archivos y montaje no disponibles. \\
         4 & Operación cancelada por el usuario en un camino peligroso. \\
         \bottomrule
@@ -100,7 +101,7 @@ El archivo \texttt{vdisk.yml} utiliza YAML, un formato de serialización legible
 VM1:
   vm_user: operador
   vm_pass: ChangeMe123
-  disk_file: /home/jorge/.mvs/VM1/VM1-datos.vdi
+  disk_file: /home/usuario/maquinas/VM1/VM1-datos.vdi
   disk_size_mb: 4096
   mount_point: /mnt/datos
   fs_type: ext4
@@ -108,8 +109,8 @@ VM1:
 
 VM2:
   vm_user: operador
-  vm_pass_file: /home/jorge/.secrets/vm2.pass
-  disk_file: /home/jorge/.mvs/VM2/VM2-datos.vdi
+  vm_pass_file: /home/usuario/secretos/vm2.pass
+  disk_file: /home/usuario/maquinas/VM2/VM2-datos.vdi
   disk_size_mb: 4096
   mount_point: /srv/datos
   fs_type: xfs

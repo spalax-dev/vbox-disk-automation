@@ -13,3 +13,6 @@
 
 # Sistema
 .DS_Store
+
+# Archivo declarativo del usuario
+vdisk.yml

@@ -2,82 +2,142 @@
 \section{Implementación}
 
 \subsection{Estructura del Código}
-% TODO: Describir organización de archivos/scripts.
-% Ejemplo:
-% \begin{itemize}
-%     \item \texttt{main.sh}: punto de entrada
-%     \item \texttt{lib/common.sh}: funciones compartidas (logging, validación, ejecución remota)
-%     \item \texttt{lib/storage.sh}: funciones de almacenamiento (particionar, formatear, montar, fstab)
-%     \item \texttt{config/vm1.conf}, \texttt{config/vm2.conf}: parámetros por VM
-% \end{itemize}
-% Explicar criterio de modularidad y reutilización.
+\label{sub:estructura}
+
+La solución implementada se organiza en un punto de entrada único y una biblioteca de funciones que éste carga, de modo que cada responsabilidad queda confinada en un fichero y puede leerse y probarse por separado \parencite{bash_best_practices}. El siguiente listado muestra el árbol de ficheros tal como se versiona en el repositorio:
+
+\begin{lstlisting}[caption={Árbol de ficheros de la solución}, label={lst:arbol}]
+vboxdisk/
++-- src/
+|   +-- vboxdisk               Punto de entrada: analiza las órdenes y despacha
+|   +-- lib/
+|       +-- common.sh          Registro, temporizadores, progreso y confirmaciones
+|       +-- config.sh          Lectura y validación de vdisk.yml con yq
+|       +-- state.sh           state.lock, huellas y bitácoras por ejecución
+|       +-- vbox.sh            Envoltorios de VBoxManage: arranque, IP, guestcontrol
+|       +-- storage.sh         Verificación declarativa y huellas en el host
+|       +-- guest_ensure.sh    Guardas de almacenamiento ejecutadas en el invitado
++-- tests/
+|   +-- bin/VBoxManage         Doble de VBoxManage para las pruebas unitarias
+|   +-- cli.bats               Análisis de argumentos y códigos de salida
+|   +-- config.bats            Validación y precedencia de la configuración
+|   +-- state.bats             Huellas, state.lock y bitácoras
++-- Makefile                   Objetos help, checkdeps, lint, test, install y uninstall
++-- vdisk.yml.example          Plantilla declarativa de referencia
++-- vdisk.yml                  Archivo declarativo del usuario (no versionado)
+\end{lstlisting}
+
+El punto de entrada \texttt{src/vboxdisk} coordina la solución: analiza la línea de comandos, localiza y carga las bibliotecas, despacha las tres órdenes descritas en la Subsección~\ref{sub:cli} y orquesta, en el caso de \texttt{apply}, las cinco etapas descritas en la Subsección~\ref{sub:algoritmo}; la lógica de dominio reside en \texttt{src/lib/}. En ese directorio, \texttt{common.sh} agrupa los servicios transversales: registro de mensajes con marca de tiempo por \texttt{stderr}, los dos cronómetros, la barra de progreso por etapa, las confirmaciones de los caminos peligrosos y la conversión de los códigos de salida de la Tabla~\ref{tab:codigos}. \texttt{config.sh} lee y valida \texttt{vdisk.yml} con \texttt{yq} y aplica la precedencia de valores de la Subsección~\ref{sub:yml}. \texttt{state.sh} administra \texttt{state.lock} y las bitácoras por ejecución. \texttt{vbox.sh} concentra todas las llamadas a \texttt{VBoxManage}: consulta de la configuración de la \vm{}, arranque, espera de \texttt{VBoxService}, lectura de propiedades, identificación de la dirección IP y despacho al invitado. \texttt{storage.sh} calcula las huellas del \host{} y el plan de cambios de la verificación declarativa. \texttt{guest\_ensure.sh} es el único fichero que se ejecuta dentro de la \vm{}: se copia con Guest Control en cada corrida y aplica las tres guardas de la Subsección~\ref{sub:algoritmo}.
+
+El punto de entrada localiza sus bibliotecas en dos lugares, según dónde se ejecute: cuando corre desde el repositorio busca \texttt{src/lib} junto al propio fichero y cuando corre instalado busca \texttt{\$XDG\_DATA\_HOME/vboxdisk/lib}, lo que permite usar la misma orden en desarrollo y después de \texttt{make install} sin rutas codificadas \parencite{xdg_spec}. El fichero \texttt{vdisk.yml.example} documenta la plantilla declarativa y \texttt{Makefile} implementa el sistema de construcción descrito en la Subsección~\ref{sub:build}. El directorio \texttt{tests/} contiene las pruebas unitarias de BATS, que emplean un doble de \texttt{VBoxManage} en \texttt{tests/bin} para ejecutarse sin \vm{} ni privilegios \parencite{shellcheck, bats_testing}.
 
 \subsection{Script / Programa Principal}
-% TODO: Incluir fragmentos clave con \lstinputlisting.
-% \lstinputlisting[caption={Script principal: detección de IP y orquestación}, label={lst:main}]{../scripts/main.sh}
-% \lstinputlisting[caption={Funciones de almacenamiento idempotentes}, label={lst:storage}]{../scripts/lib/storage.sh}
-%
-% Explicar secciones clave:
-% - Parseo de argumentos / lectura de configuración
-% - Detección automática de IP de la VM
-% - Establecimiento de comunicación (Guest Control o SSH)
-% - Ejecución remota de comandos de preparación de almacenamiento
-% - Verificaciones de idempotencia en cada paso
-% - Manejo de salida y códigos de error
+\label{sub:script}
+
+El punto de entrada abre con el modo estricto de Bash y con una trampa (\texttt{trap}) que destruye los ficheros temporales de credenciales tanto en el \host{} como en el invitado, con independencia de cómo termine la ejecución. A continuación analiza la línea de comandos: exige una orden de las tres válidas, acepta las banderas globales \texttt{-f}, \texttt{--dry-run} y \texttt{-y}, y responde a \texttt{--help} y \texttt{--version} sin requerir una orden. Una orden desconocida o una bandera inválida terminan con el mensaje de uso y el código~1, de modo que la solución nunca adivina lo que el usuario pretendía \parencite{bash_best_practices}.
+
+\lstinputlisting[caption={Punto de entrada: análisis de argumentos y despacho de órdenes}, label={lst:entrada}, firstline=343, lastline=413]{../src/vboxdisk}
+
+Las órdenes \texttt{status} y \texttt{ld} comparten la carga de configuración con \texttt{apply}, pero son estrictamente de solo lectura: \texttt{status} cruza las entradas de \texttt{state.lock} con el estado que reporta \texttt{showvminfo} y con la propiedad de dirección IP cuando la \vm{} está encendida, y \texttt{ld} muestra la tabla de particiones registrada para la \vm{} indicada con la fecha de su registro, sin encenderla ni abrirla \parencite{virtualbox_vboxmanage}.
+
+La orden \texttt{apply} carga primero la configuración completa: enumera las \vm{} declaradas con \texttt{yq}, valida cada bloque frente a la Tabla~\ref{tab:claves}, resuelve la precedencia de valores y confirma la existencia de cada \vm{} en el hipervisor con una consulta de solo lectura. Cualquier incumplimiento detiene la ejecución con el código~1 antes de encender, modificar o sondear máquina alguna. La validación se concentra en \texttt{config.sh}, cuyo núcleo se muestra a continuación:
+
+\lstinputlisting[caption={Validación de un bloque declarativo: claves reservadas y obligatorias}, label={lst:validacion}, firstline=37, lastline=75]{../src/lib/config.sh}
+
+Superada la validación, \texttt{apply} recorre las \vm{} declaradas y aplica a cada una la secuencia de cinco etapas de la Subsección~\ref{sub:algoritmo}: (1) verificación declarativa contra \texttt{state.lock} y las huellas del \host{}; (2) disponibilidad de la \vm{}, que incluye su encendido con \texttt{VBoxManage startvm --type headless} y la espera de \texttt{VBoxService}; (3) identificación de la dirección IP en tiempo de ejecución; (4) despacho del script de almacenamiento al invitado con Guest Control; y (5) verificación final y registro en \texttt{state.lock}. Cada etapa avanza la barra de progreso por \texttt{stderr} y, cuando la salida no es un terminal, emite en su lugar una línea plana con el número de etapa, el nombre y la duración, de modo que la bitácora y las redirecciones contengan marcas de tiempo legibles y no secuencias de control. El cronómetro de disponibilidad se detiene al final de la etapa~2 y el cronómetro total al cerrar la última \vm{}, y ambos se reportan en el resumen final \parencite{virtualbox_vboxmanage}.
+
+La comunicación con el invitado se materializa en una secuencia de llamadas sin interacción. Una crea con \texttt{VBoxManage guestcontrol mktemp} un directorio temporal en la \vm{}; otras dos copian a ese directorio \texttt{guest\_ensure.sh} y el fichero temporal de la contraseña con \texttt{copyto}; y la última ejecuta el script con \texttt{VBoxManage guestcontrol run}, indicando el usuario y la contraseña con \texttt{--passwordfile}, el directorio de trabajo con \texttt{--cwd} y un tiempo máximo con \texttt{--timeout}; la salida estándar y de error del invitado se capturan en el \host{} y se reenvían a la bitácora. Como el código que devuelve \texttt{run} mezcla los códigos de salida del proceso invitado con los errores propios del servicio Guest Control, el script termina siempre con una línea centinela de la forma \texttt{VBOXDISK\_EXIT=<n>}, que el \host{} interpreta para decidir si la etapa fue satisfactoria \parencite{virtualbox_guestcontrol}.
+
+La identificación de la dirección IP implementa el mecanismo de la Subsección~\ref{sub:arquitectura}: consulta la propiedad que publican las \guestadditions{} y, si aún no está disponible, recurre a la tabla ARP del \host{}, emparejando la dirección MAC del adaptador reportada por \texttt{showvminfo} con la normalizada de \texttt{ip neigh}; ambos intentos se repiten con un intervalo de dos segundos hasta agotar el tiempo de espera:
+
+\lstinputlisting[caption={Identificación de la dirección IP: propiedad de Guest Additions con respaldo ARP}, label={lst:ip}, firstline=102, lastline=153]{../src/lib/vbox.sh}
+
+El script \texttt{guest\_ensure.sh} recibe por argumentos los parámetros de la \vm{} y opera en dos modos: sondeo, que solo lee y devuelve el estado actual, y convergencia, que aplica las tres guardas. El script se eleva una única vez con \texttt{sudo}, leyendo la contraseña del fichero temporal copiado al invitado, y destruye ese fichero al terminar; así ninguna operación pide datos al usuario \parencite{virtualbox_guestcontrol}. El núcleo de la convergencia es el siguiente:
+
+\lstinputlisting[caption={Guardas idempotentes del script invitado: tabla, sistema de archivos y montaje}, label={lst:guardas}, firstline=243, lastline=301]{../src/lib/guest_ensure.sh}
+
+La primera guarda identifica el disco adicional con \texttt{lsblk} por su tamaño declarado y comprueba si carece de tabla de particiones; solo entonces crea una tabla GPT con una partición con \texttt{parted} \parencite{kernel_block_devices, linux_storage_management}. La segunda consulta \texttt{blkid} y, si la partición no contiene sistema de archivos, ejecuta \texttt{mkfs.ext4} o \texttt{mkfs.xfs} según \texttt{fs\_type}. La tercera contrasta \texttt{findmnt} y \texttt{/etc/fstab} y, únicamente si el montaje no está declarado ni activo, obtiene el UUID, crea el punto de montaje, añade la entrada por UUID y ejecuta \texttt{mount -a} \parencite{uuid_fstab, lsb_fhs}. Al finalizar, el script devuelve en pares \texttt{clave=valor} el dispositivo, la tabla, el sistema de archivos, el UUID, el estado del montaje y la entrada en \texttt{fstab}; con esa salida, el \host{} contrasta los valores declarados con la verificación que el propio script ejecuta con \texttt{findmnt} y \texttt{df -h}, y solo si esa verificación es correcta actualiza \texttt{state.lock}, de modo que una ejecución fallida no queda enmascarada en la siguiente corrida \parencite{idempotency_concept}.
 
 \subsection{Parametrización para Múltiples VMs}
-% TODO: Explicar qué parámetros varían entre VMs y cómo se gestionan.
-% Parámetros variables:
-% - IP / hostname de la VM
-% - Usuario para conexión (root o usuario con sudo)
-% - Dispositivo de disco objetivo (ej. /dev/sdb, /dev/vdb)
-% - Punto de montaje deseado (ej. /mnt/datos, /data)
-% - Tipo de sistema de archivos (ext4, xfs)
-% - Credenciales / clave SSH
-%
-% Estrategia: archivo de configuración por VM (INI, YAML, JSON, o .env) o variables de entorno.
-% Ejemplo de archivo config:
-% \begin{verbatim}
-% VM_IP=192.168.1.50
-% VM_USER=admin
-% DISK_DEVICE=/dev/sdb
-% MOUNT_POINT=/mnt/datos
-% FS_TYPE=ext4
-% \end{verbatim}
+\label{sub:parametrizacion}
+
+El requerimiento de atender más de una \vm{} se resuelve separando lo que varía de lo que no varía. El algoritmo de cinco etapas, las órdenes de \texttt{VBoxManage}, las tres guardas de almacenamiento, los códigos de salida y el formato de \texttt{state.lock} permanecen idénticos para toda máquina; lo único que cambia son los valores del bloque declarativo de la Tabla~\ref{tab:claves} y la identidad de la \vm{} en el hipervisor. Por esa razón ninguna función de \texttt{src/lib/} contiene el nombre de una \vm{} ni una dirección codificada: el punto de entrada enumera las claves de primer nivel de \texttt{vdisk.yml} con \texttt{yq eval 'keys'} y, para cada una, lee los parámetros con consultas del tipo \texttt{yq -r '.VM1.mount\_point'}, en las que solo cambia el nombre de la máquina en curso \parencite{yaml_spec}.
+
+En el escenario descrito, \texttt{VM1} y \texttt{VM2} comparten el sistema invitado y la estructura del archivo declarativo y difieren en el punto de montaje (\texttt{/mnt/datos} frente a \texttt{/srv/datos}), en el sistema de archivos (\texttt{ext4} frente a \texttt{xfs}), en la etiqueta del volumen y en la procedencia de la contraseña, que en un bloque se declara como valor literal y en el otro como ruta de un fichero. El punto de entrada recorre la lista de máquinas y ejecuta la misma función de convergencia sobre cada una, de modo que incorporar una tercera \vm{} consiste en añadir su bloque en \texttt{vdisk.yml}, sin modificar el código, la interfaz ni las pruebas \parencite{terraform, bash_best_practices}. Además, cualquier variable reservada admite sobrescribirse con una variable de entorno con el prefijo \texttt{VBOXDISK\_}, según la precedencia de la Subsección~\ref{sub:yml}, lo que permite ajustar un parámetro puntual en una corrida determinada o en las pruebas automatizadas sin editar el archivo. El estado se almacena en un único \texttt{state.lock} con una entrada por \vm{}, de manera que la aplicación sobre \texttt{VM2} no lee ni escribe el registro de \texttt{VM1} \parencite{xdg_spec}.
 
 \subsection{Manejo de Errores y Casos Edge}
-% TODO: Documentar estrategias de robustez.
-% - Timeouts en conexión y comandos remotos
-% - Reintentos con backoff (ej. esperar a que Guest Additions estén listas)
-% - Validaciones previas: VM encendida, red accesible, disco existe, espacio suficiente
-% - Códigos de salida significativos (0=ok, 1=error config, 2=error conexión, 3=error almacenamiento)
-% - Logging estructurado (timestamp, nivel, mensaje) a archivo y stdout
-% - Limpieza en caso de fallo parcial (no dejar sistema en estado inconsistente)
+\label{sub:errores}
 
-\subsection{Evidencias de Pruebas}
-% TODO: Completar tabla con las 6 pruebas requeridas por el enunciado (punto 5).
-% Para cada prueba: condición inicial, procedimiento, resultado esperado, resultado obtenido, evidencia.
-%
-% \begin{longtable}{@{}p{0.5cm}p{2.5cm}p{2.5cm}p{3cm}p{2.5cm}p{2.5cm}p{2.5cm}@{}}
-% \toprule
-% \textbf{ID} & \textbf{Prueba} & \textbf{Condición Inicial} & \textbf{Procedimiento} & \textbf{Resultado Esperado} & \textbf{Resultado Obtenido} & \textbf{Evidencia} \\
-% \midrule
-% \endhead
-% 1 & Configuración inicial VM1 & VM1 sin disco configurado, encendida, Guest Additions OK & Ejecutar solución contra VM1 & Disco particionado, formateado, montado en /mnt/datos, entrada en fstab & [Pendiente] & Captura terminal / log \\
-% 2 & Configuración inicial VM2 & VM2 sin disco configurado, encendida, Guest Additions OK & Ejecutar solución contra VM2 & Mismo resultado que VM1, parámetros distintos & [Pendiente] & Captura terminal / log \\
-% 3 & Disponibilidad almacenamiento & Proceso completado en VM1 & \texttt{df -h}, \texttt{lsblk}, escribir archivo prueba & Almacenamiento accesible, escribible, con espacio esperado & [Pendiente] & Captura \texttt{df -h}, archivo creado \\
-% 4 & Persistencia tras reboot & VM1 con almacenamiento configurado & Reiniciar VM1 (\texttt{reboot}), verificar montaje & Almacenamiento montado automáticamente tras reinicio & [Pendiente] & Captura \texttt{findmnt} post-reboot \\
-% 5 & Re-ejecución en VM configurada & VM1 ya configurada (prueba 1) & Ejecutar solución nuevamente sobre VM1 & Sin pérdida de datos, sin reformatear, sin duplicar fstab, salida exitosa & [Pendiente] & Log ejecución, \texttt{blkid} sin cambios \\
-% 6 & Condición de fallo & VM apagada / sin Guest Additions / disco inexistente & Ejecutar solución & Error controlado, mensaje claro, código salida ≠ 0, sin cambios en sistema & [Pendiente] & Captura error, log \\
-% \bottomrule
-% \caption{Resumen de pruebas ejecutadas y evidencias}
-% \label{tab:pruebas}
-% \end{longtable}
-%
-% Adjuntar evidencias como capturas de pantalla en \texttt{images/} y referenciarlas:
-% \begin{figure}[H]
-%     \centering
-%     \includegraphics[width=0.8\textwidth]{evidencia_prueba1.png}
-%     \caption{Evidencia prueba 1: configuración inicial VM1}
-%     \label{fig:evidencia1}
-% \end{figure}
+La solución presupone que cualquier operación puede fallar y que todo fallo debe ser detectable, comunicado con claridad y no destructivo. Cuatro mecanismos sostienen ese objetivo: validación antes de actuar, tiempos de espera con reintentos, confirmación en los caminos peligrosos y códigos de salida diferenciados, descritos en la Subsección~\ref{sub:cli} y resumidos en la Tabla~\ref{tab:codigos}. La Tabla~\ref{tab:casos} detalla la respuesta prevista ante cada situación excepcional.
+
+\begin{table}[H]
+    \centering
+    \caption{Respuesta de la solución ante situaciones excepcionales}
+    \label{tab:casos}
+    \begin{tabular}{@{}p{5.8cm}p{10.0cm}@{}}
+        \toprule
+        \textbf{Situación} & \textbf{Respuesta de la solución} \\
+        \midrule
+        Orden o bandera desconocida; \texttt{vdisk.yml} ausente, inválido o con claves ajenas a la Tabla~\ref{tab:claves} & Mensaje de uso o de validación y código~1, sin tocar el sistema. \\
+        Credencial ausente o ilegible; \vm{} declarada que no existe en el hipervisor & Rechazo durante la carga de la configuración, código~1. \\
+        \texttt{VBoxManage} ausente en el \host{} & Detección en \texttt{checkdeps} al instalar y, en tiempo de ejecución, verificación inicial con código~1. \\
+        \vm{} apagada & Se enciende con \texttt{startvm} y se espera a \texttt{VBoxService} reintentando cada dos segundos durante 120 segundos; sin respuesta, mensaje y código~2. \\
+        Dirección IP no disponible tras la propiedad de las \guestadditions{} y el respaldo ARP & Agotados los reintentos, mensaje y código~2, sin iniciar la etapa de almacenamiento. \\
+        Disco \texttt{.vdi} ausente en el \host{} o deriva detectada en el sondeo del invitado & Confirmación previa o bandera \texttt{-y}; sin confirmación, código~4 y \vm{} intacta. \\
+        Fallo de \texttt{parted}, \texttt{mkfs} o \texttt{mount} en el invitado & Se detiene la \vm{} en curso, el fallo queda en la bitácora, código~3 y \texttt{state.lock} sin actualizar. \\
+        Salida redirigida a fichero o interrupción del proceso & Una línea plana por etapa, sin secuencias de escape; la trampa de salida destruye los ficheros temporales de credenciales. \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+Los tiempos de espera son finitos y configurables con variables de entorno con el prefijo \texttt{VBOXDISK\_}: la espera de disponibilidad de la \vm{} y la ejecución del script en el invitado, que se limita además con \texttt{--timeout} en \texttt{guestcontrol run}. Un tiempo agotado se comunica con su causa en \texttt{stderr}, se registra en la bitácora y termina con el código correspondiente, de modo que la solución nunca queda indefinidamente suspendida \parencite{bash_best_practices}.
+
+El carácter no destructivo descansa en dos reglas. Primera: ninguna operación que destruya datos, como crear una tabla de particiones o ejecutar \texttt{mkfs}, se ejecuta sin pasar antes por su guarda de solo lectura, de forma que una \vm{} ya configurada recibe únicamente las acciones que le faltan \parencite{idempotency_concept}. Segunda: \texttt{state.lock} solo se actualiza cuando la verificación final es correcta, de modo que una ejecución interrumpida o fallida deja el registro anterior vigente y la siguiente corrida vuelve a comparar contra la realidad. El modo \texttt{--dry-run} materializa este principio sin riesgo: calcula y muestra el plan de cambios de la verificación declarativa en el \host{} y no enciende \vm{} alguna ni modifica discos, estado ni archivos. Cuando \texttt{apply} atiende varias \vm{}, el código final refleja el error de mayor severidad: los códigos globales~1 y~4 prevalecen sobre los particulares y, entre estos, el código~3 precede al~2; la validación global ocurre antes de cualquier confirmación, de modo que los dos códigos globales no compiten en una misma corrida.
+
+\subsection{Verificación Estática y Pruebas Unitarias}
+\label{sub:unitarias}
+
+Antes de cualquier corrida contra una \vm{} real, la solución se somete a los dos niveles automatizados que encadena \texttt{make install}, según se describió en la Subsección~\ref{sub:build}. El primero es estático: ShellCheck analiza el punto de entrada y las bibliotecas y reporta expansiones sin comillas, rutas no protegidas y demás defectos característicos de los programas en shell sin ejecutarlos \parencite{shellcheck}. El segundo son pruebas unitarias con BATS: los ficheros de \texttt{tests/} montan en la ruta de búsqueda un doble de \texttt{VBoxManage} que responde con salidas fijas, de modo que las funciones se ejercitan sin hipervisor, sin privilegios y en milisegundos \parencite{bats_testing}. Las pruebas cubren el análisis de argumentos y la conversión de códigos de salida (\texttt{cli.bats}), la validación y la precedencia de \texttt{vdisk.yml} (\texttt{config.bats}) y el cálculo de huellas, la lectura y escritura de \texttt{state.lock} y el registro de bitácoras (\texttt{state.bats}). El doble permite además reproducir los caminos de error de la Tabla~\ref{tab:casos}, como una \vm{} inexistente o una dirección IP no disponible, así como la interpretación de la salida \texttt{clave=valor} y de la centinela del script invitado, sin preparar ninguna condición de fallo en las máquinas reales.
+
+\subsection{Evidencias de las Pruebas de Funcionamiento}
+
+Las pruebas de funcionamiento verifican la solución contra las \vm{} reales del escenario y corresponden a las seis condiciones exigidas en el punto~5 del enunciado. Cada corrida deja como evidencia la bitácora correspondiente, en la ruta descrita en la Tabla~\ref{tab:instalacion}, junto con las capturas de pantalla que se adjuntan en el directorio \texttt{images/}. La Tabla~\ref{tab:pruebas} registra el diseño de cada prueba, con su condición inicial, su procedimiento y su resultado esperado; el resultado obtenido y la evidencia se completan con cada corrida contra el escenario.
+
+\begin{longtable}{@{}p{0.5cm}p{2.0cm}p{1.9cm}p{2.7cm}p{2.7cm}p{1.8cm}p{2.3cm}@{}}
+\toprule
+\textbf{ID} & \textbf{Prueba} & \textbf{Condición inicial} & \textbf{Procedimiento} & \textbf{Resultado esperado} & \textbf{Resultado obtenido} & \textbf{Evidencia} \\
+\midrule
+\endhead
+1 & Configuración inicial de VM1 & VM1 encendida; disco adicional declarado sin tabla de particiones & Ejecutar \texttt{vboxdisk apply} en el \host{} sobre \texttt{vdisk.yml} & Tabla GPT con una partición, ext4 etiquetado, montado en \texttt{/mnt/datos} y entrada por UUID en \texttt{/etc/fstab}; código~0 & [Pendiente] & Bitácora y capturas de \texttt{lsblk}, \texttt{findmnt} y \texttt{df -h} \\
+2 & Configuración de VM2 & VM2 encendida; disco adicional declarado sin sistema de archivos & Ejecutar la misma orden \texttt{vboxdisk apply} sobre las dos \vm{} & Mismo flujo que la prueba~1 aplicando los parámetros de VM2: xfs en \texttt{/srv/datos}; código~0 & [Pendiente] & Bitácora y capturas de \texttt{findmnt} y \texttt{lsblk} \\
+3 & Disponibilidad del almacenamiento & Prueba~1 completada en VM1 & Dentro de VM1 ejecutar \texttt{df -h} y \texttt{lsblk}, y crear un archivo de prueba & Los 4096\,MB reportados por \texttt{df -h}, escritura y relectura del archivo sin errores & [Pendiente] & Captura de \texttt{df -h} y del archivo creado \\
+4 & Persistencia tras reinicio & VM1 con el almacenamiento configurado según la prueba~1 & Reiniciar VM1 y verificar después del arranque, sin ejecutar la solución & \texttt{/mnt/datos} montado automáticamente con la entrada UUID de \texttt{/etc/fstab} & [Pendiente] & Capturas de \texttt{findmnt} y \texttt{df -h} después del reinicio \\
+5 & Re-ejecución sobre VM configurada & VM1 ya configurada, con archivo de datos persistido & Ejecutar de nuevo \texttt{vboxdisk apply} sobre VM1 & Código~0 sin reformatear, sin duplicar entradas en \texttt{fstab} y con el archivo de datos intacto & [Pendiente] & Bitácora de la segunda corrida y comparación de \texttt{blkid} y \texttt{/etc/fstab} \\
+6 & Condición que impide la ejecución normal & VM1 encendida con el adaptador en modo puente desconectado & Ejecutar \texttt{vboxdisk apply} sobre VM1 & Mensaje claro de dirección IP no disponible al agotar los reintentos, código~2 y almacenamiento sin modificar & [Pendiente] & Bitácora de la corrida y captura del mensaje de error \\
+\bottomrule
+\caption{Diseño y resultados de las pruebas de funcionamiento con sus evidencias}
+\label{tab:pruebas}
+\end{longtable}
+
+\subsection{Tiempo de Ejecución}
+\label{sub:tiempo}
+
+El tiempo de ejecución se mide con los dos cronómetros que la solución imprime en cada corrida, descritos en la Subsección~\ref{sub:cli}: el primero registra el intervalo entre el encendido de la \vm{} y el momento en que \texttt{VBoxService} responde, es decir, en que la máquina queda disponible para recibir las órdenes de configuración, y el segundo cubre la corrida completa hasta la verificación final. Ambos quedan en la bitácora con la marca de tiempo de cada etapa, por lo que varias corridas pueden compararse sin instrumentación adicional. La Tabla~\ref{tab:tiempos} reúne las mediciones de tres corridas consecutivas sobre \texttt{VM1}; la columna de condiciones registra el estado inicial de la \vm{}, que es la principal fuente de variación, pues una corrida fría incluye el arranque completo del sistema invitado.
+
+\begin{table}[H]
+    \centering
+    \caption{Mediciones del tiempo hasta la disponibilidad de la \vm{} y del tiempo total}
+    \label{tab:tiempos}
+    \begin{tabular}{@{}lp{4.2cm}p{2.5cm}p{2.3cm}p{4.1cm}@{}}
+        \toprule
+        \textbf{Corrida} & \textbf{Condiciones} & \textbf{Disponible (s)} & \textbf{Total (s)} & \textbf{Observaciones} \\
+        \midrule
+        1 & VM1 apagada al iniciar & [Pendiente] & [Pendiente] & [Pendiente] \\
+        2 & VM1 apagada al iniciar & [Pendiente] & [Pendiente] & [Pendiente] \\
+        3 & VM1 encendida al iniciar & [Pendiente] & [Pendiente] & [Pendiente] \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+
+

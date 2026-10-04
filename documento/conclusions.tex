@@ -1,47 +1,45 @@
 % ==================== CONCLUSIONES ====================
 \section{Conclusiones}
 
-% TODO: Redactar conclusiones cubriendo los siguientes puntos:
-
 \subsection{Logros Alcanzados}
-% - Se desarrolló una solución de automatización completa que configura almacenamiento adicional
-%   en máquinas virtuales GNU/Linux desde el host usando Oracle VM VirtualBox.
-% - La solución es automática (sin intervención manual), reproducible (mismo resultado en cada ejecución)
-%   y reutilizable (probada en al menos 2 VMs con parámetros distintos).
-% - Se logró comunicación host-guest mediante [Guest Control API / SSH] sin requerir ingreso
-%   de contraseñas ni comandos manuales durante la ejecución.
-% - El algoritmo es idempotente: re-ejecutar la solución sobre una VM ya configurada no destruye
-%   datos, no reformatea el disco, ni duplica entradas en \texttt{/etc/fstab}.
+
+Se desarrolló una solución completa de automatización que prepara el almacenamiento adicional de una \vm{} GNU/Linux desde el \host{}, sin intervención manual alguna: la solución enciende la \vm{}, espera a que el sistema invitado esté disponible, identifica su dirección IP en tiempo de ejecución y ejecuta la secuencia de identificación del disco, particionado, creación del sistema de archivos, punto de montaje y montaje persistente en \texttt{/etc/fstab} \parencite{linux_storage_management, uuid_fstab}. La comunicación \host{}-\vm{} se materializa con la Guest Control API de VirtualBox, de modo que ninguna operación exige contraseñas, comandos interactivos ni pulsaciones de tecla durante la corrida \parencite{virtualbox_guestcontrol}.
+
+El resultado es una orden única, \texttt{vboxdisk apply}, reproducible porque la misma configuración declarativa conduce al mismo estado final, y reutilizable porque la lógica no está ligada a una \vm{} concreta: el archivo \texttt{vdisk.yml} parametriza por máquina el usuario, el disco, el tamaño, el sistema de archivos y el punto de montaje, y la misma corrida convergió sobre \texttt{VM1} con ext4 en \texttt{/mnt/datos} y sobre \texttt{VM2} con xfs en \texttt{/srv/datos}. El algoritmo es idempotente: re-ejecutar la solución sobre una \vm{} ya configurada no reformatea el disco, no pierde los datos persistidos ni duplica entradas en \texttt{/etc/fstab}, porque cada acción destructiva está precedida de una guarda de solo lectura que contrasta el estado real con el declarado \parencite{idempotency_concept}.
 
 \subsection{Cumplimiento de Requisitos del Parcial}
-% \begin{itemize}
-%     \item \textbf{Comunicación host-guest (3.1):} Implementada vía [mecanismo], con obtención
-%           automática de IP y red en modo puente.
-%     \item \textbf{Automatización completa (3.2):} Cero intervención manual: el script/programa
-%           maneja todo el flujo.
-%     \item \textbf{Preparación de almacenamiento (3.3):} Particionado, FS, montaje, fstab automatizados.
-%     \item \textbf{Ejecución repetida / idempotencia (3.4):} Verificada experimentalmente (prueba 5).
-%     \item \textbf{Aplicación a múltiples VMs (3.5):} Probado en VM1 y VM2 con configuración parametrizada.
-%     \item \textbf{Tiempo de ejecución (3.6):} Medido experimentalmente [X ejecuciones, promedio Y segundos].
-%     \item \textbf{Tecnología (4):} Desarrollado en [Bash].
-%     \item \textbf{Pruebas (5):} 6 casos cubiertos con evidencias documentadas.
-%     \item \textbf{Escenario (6):} Diagrama y descripción en Sección 3.1.
-% \end{itemize}
+
+\begin{itemize}
+    \item \textbf{Comunicación \host{}-\vm{} (3.1):} Guest Control API con obtención automática de la dirección IP a partir de la propiedad que publican las \guestadditions{} y respaldo sobre la tabla ARP, en red en modo puente \parencite{virtualbox_guestcontrol, virtualbox_networking}.
+    \item \textbf{Automatización completa (3.2):} cero intervención manual; las credenciales se pasan mediante un fichero temporal que se destruye al terminar, tanto en el \host{} como en el invitado.
+    \item \textbf{Preparación de almacenamiento (3.3):} particionado, creación del sistema de archivos, punto de montaje, entrada por UUID en \texttt{fstab} y montaje, ejecutados por el script invitado \texttt{guest\_ensure.sh} \parencite{kernel_block_devices, lsb_fhs}.
+    \item \textbf{Ejecución repetida / idempotencia (3.4):} mecanismo descrito en la Subsección~\ref{sub:algoritmo} y comprobado en la prueba~5 de la Tabla~\ref{tab:pruebas}.
+    \item \textbf{Aplicación a múltiples \vm{} (3.5):} probado con dos \vm{} cuya única diferencia son los valores de \texttt{vdisk.yml}; ninguna lógica del programa depende de una máquina particular.
+    \item \textbf{Tiempo de ejecución (3.6):} medido con los dos cronómetros integrados; las mediciones de tres corridas se reportan en la Tabla~\ref{tab:tiempos}.
+    \item \textbf{Tecnología (4):} Shell script (Bash) en un \host{} GNU/Linux, con \texttt{make} como sistema de construcción y ShellCheck y BATS como verificación \parencite{bash_best_practices, shellcheck, bats_testing}.
+    \item \textbf{Pruebas (5):} seis pruebas diseñadas con condición inicial, procedimiento, resultado esperado, resultado obtenido y evidencia, en la Tabla~\ref{tab:pruebas}.
+    \item \textbf{Escenario (6):} diagrama de despliegue y descripción en la Sección~\ref{sub:escenario}.
+\end{itemize}
+
+\subsection{Problemas Encontrados y su Solución}
+
+El desarrollo presentó cuatro problemas que se resolvieron de la siguiente manera.
+
+\begin{description}[style=nextline, leftmargin=1.2cm]
+    \item[Código de salida ambiguo] La llamada \texttt{VBoxManage guestcontrol run} devuelve códigos que mezclan los del proceso invitado con los del propio servicio Guest Control, de modo que un fallo del servicio y un código de salida del script no eran distinguibles en el \host{}. Se resolvió con una línea centinela \texttt{VBOXDISK\_EXIT=<n>} emitida por el script invitado sobre su salida estándar: el \host{} la interpreta de forma explícita y solo asigna el código~0 cuando la centinela indica convergencia correcta.
+    \item[Limpieza de credenciales] La trampa de salida del \host{} destruía primero los ficheros temporales de contraseña locales, pero el script invitado aún necesitaba el suyo para terminar de eliminarse a sí mismo en el invitado. Se reordenó la secuencia: primero se limpian los directorios temporales del invitado con Guest Control y solo después se revuelven los ficheros del \host{}, de modo que ninguna corrida, ni siquiera una interrumpida, deja credenciales en ninguno de los dos lados.
+    \item[Nombres de \vm{} con guion] Las consultas a \texttt{yq} construían las rutas de acceso como \texttt{VM1.mount\_point}, lo que interpretaba mal los nombres con guion. Se pasan las claves siempre entre comillas (\texttt{."\$\{vm\}".\"\$\{key\}\"}), de modo que cualquier nombre que supere la validación se lee correctamente.
+    \item[Restricciones de Guest Control] El servicio no admite la eliminación recursiva de directorios con \texttt{guestcontrol rm} y \texttt{mktemp} anuncia el directorio creado con un prefijo de texto. Se eliminan los directorios temporales con \texttt{guestcontrol run -- /bin/rm -rf} y se extrae la ruta con el prefijo indicado en la documentación de la utilidad \parencite{virtualbox_guestcontrol}.
+\end{description}
+
+\subsection{Herramientas de Inteligencia Artificial Utilizadas}
+
+Se empleó un agente de inteligencia artificial basado en un modelo de lenguaje, integrado en la terminal, para las siguientes tareas. En primer lugar, como asistente de desarrollo: diseño del enfoque declarativo y del algoritmo de cinco etapas, generación del código Bash de las bibliotecas en \texttt{src/}, del \texttt{Makefile}, de los ficheros de prueba BATS y del doble de \texttt{VBoxManage}. En segundo lugar, como verificador documental: se consultó la documentación oficial y el código fuente de VirtualBox para confirmar el comportamiento exacto de \texttt{guestcontrol run}, \texttt{mktemp}, \texttt{copyto} y \texttt{rm}, lo que permitió detectar que \texttt{rm} no admite eliminación recursiva y corregir el diseño de la limpieza del invitado antes de ejecutarlo. En tercer lugar, como redactor y corrector: redacción de las secciones del presente documento en \LaTeX{}, seguimiento de las convenciones del trabajo y corrección mecánica de los hallazgos de ShellCheck y de las advertencias de sobreancho de la composición tipográfica. La ejecución de las pruebas contra las \vm{} reales y la validación final de los resultados corresponden a los autores del trabajo.
 
 \subsection{Limitaciones Identificadas}
-% - La solución asume Guest Additions instaladas y funcionando en la VM.
-% - Requiere red en modo puente configurada y accesible.
-% - Diseñada para un único disco adicional por VM (no maneja múltiples discos, LVM, RAID).
-% - Probada en [lista de SO: Ubuntu 22.04, Debian 12, etc.]; otros SO pueden requerir ajustes.
-% - Autenticación: credenciales/claves gestionadas en archivo de config (considerar vault/secrets para producción).
-% - No incluye manejo de discos ya particionados con datos (asume disco vacío o reutilizable).
+
+La solución exige que las \guestadditions{} estén instaladas y funcionando en el invitado, pues tanto la espera de disponibilidad como la obtención de la dirección IP dependen de ellas \parencite{virtualbox_guestadditions}. Supone además una red en modo puente accesible desde el \host{} y un único disco adicional vacío por \vm{}: no aborda LVM, varios discos ni discos con contenido previo que deba conservarse. Las credenciales de las \vm{} viven en \texttt{vdisk.yml} o en un fichero legible por el usuario, suficiente para un entorno de pruebas pero no para uno productivo, donde convendría un almacén de secretos.
 
 \subsection{Trabajo Futuro}
-% - Soporte para LVM (volúmenes lógicos, redimensionamiento en caliente).
-% - Manejo de múltiples discos adicionales por VM.
-% - Integración con pipeline CI/CD (GitHub Actions, GitLab CI) para aprovisionamiento automático.
-% - Soporte para otras plataformas: VMware, KVM/libvirt, Hyper-V.
-% - Interfaz gráfica / TUI para gestión de fleet de VMs.
-% - Uso de herramientas de configuración declarativa (Ansible, Terraform) como alternativa.
-% - Mejora de seguridad: rotación de claves, certificados, auditoría de acciones.
-% - Métricas y observabilidad (Prometheus, logging centralizado).
+
+Extensiones naturales incluyen el soporte de LVM y de varios discos por \vm{}, la ejecución desde un pipeline de integración continua, la traslación de la misma idea declarativa a otras plataformas de virtualización y la sustitución de la autenticación por contraseña por claves de \texttt{ssh} cuando el entorno lo permita. En el plano operativo, la inclusión de métricas y de una bitácora estructurada facilitaría la observabilidad de corridas sobre muchas \vm{} simultáneas \parencite{ansible_up_running}.

@@ -1,0 +1,413 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2034  # variables compartidas entre la
+# entrada y las demas bibliotecas de src/lib.
+# vboxdisk: punto de entrada. Analiza la linea de comandos, carga las
+# bibliotecas, despacha apply, status o ld y orquesta las cinco etapas de
+# convergencia por cada vm del archivo declarativo.
+set -euo pipefail
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+
+if [[ -f "$SCRIPT_DIR/lib/common.sh" ]]; then
+    LIB_DIR="$SCRIPT_DIR/lib"
+else
+    LIB_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/vboxdisk/lib"
+fi
+if [[ ! -f "$LIB_DIR/common.sh" ]]; then
+    printf 'vboxdisk: no se encontraron las bibliotecas en %s\n' "$LIB_DIR" >&2
+    exit 1
+fi
+for _lib in common config state vbox storage; do
+    # shellcheck disable=SC1090
+    source "$LIB_DIR/$_lib.sh"
+done
+GUEST_SCRIPT="$LIB_DIR/guest_ensure.sh"
+
+trap cleanup_tmps EXIT
+
+usage() {
+    cat <<'EOF'
+Uso: vboxdisk <orden> [opciones]
+
+Ordenes:
+  apply            Converge todas las vm de ./vdisk.yml (unico caso que modifica)
+  status           Lista las vm con su estado de sincronizacion y direccion IP
+  ld <nombre>      Muestra la tabla de particiones registrada para una vm
+
+Opciones:
+  -f, --file FILE  Archivo declarativo (por defecto ./vdisk.yml)
+  --dry-run        Muestra el plan de cambios sin modificar nada (apply)
+  -y, --yes        Omite las confirmaciones de los caminos peligrosos
+  -h, --help       Muestra esta ayuda y termina
+  --version        Muestra la version instalada y termina
+
+Codigos de salida: 0 convergido | 1 uso o configuracion | 2 comunicacion con
+la vm | 3 almacenamiento o verificacion | 4 cancelado por el usuario
+EOF
+}
+
+die_cfg() { die "$VBOXDISK_E_CONFIG" "$@"; }
+
+# validate_config <con_hipervisor 0|1>: carga y validacion previa a actuar.
+validate_config() {
+    local check_hypervisor="$1" vm
+    if ! have_cmd yq; then
+        die_cfg "yq no esta disponible en el host (dependencia de ejecucion)"
+    fi
+    cfg_validate "$VBOXDISK_FILE" || die_cfg "el archivo declarativo no supera la validacion: $VBOXDISK_FILE"
+    if [[ "$check_hypervisor" == "1" ]]; then
+        vbox_require
+        while IFS= read -r vm; do
+            if ! vbox_vm_exists "$vm"; then
+                die_cfg "la vm '$vm' del archivo declarativo no existe en el hipervisor"
+            fi
+        done < <(cfg_vms)
+    fi
+}
+
+# guest_dispatch <vm> <converge|probe>: copia el script invitado, lo ejecuta,
+# registra su salida en la bitacora y deja los campos GUEST_* analizados.
+guest_dispatch() {
+    local vm="$1" mode="$2"
+    local user pass_raw passfile guest_pass guest_dir vb_rc=0 out line i label device
+    local args=()
+
+    user="$(cfg_get "$vm" vm_user)"
+    pass_raw="$(cfg_get "$vm" vm_pass)"
+    if [[ -n "$pass_raw" ]]; then
+        passfile="$(mktemp "${TMPDIR:-/tmp}/vboxdisk.pass.XXXXXX")"
+        chmod 600 "$passfile"
+        printf '%s\n' "$pass_raw" >"$passfile"
+        register_tmp "$passfile"
+    else
+        passfile="$(cfg_get "$vm" vm_pass_file)"
+    fi
+    VBOXDISK_GUEST_USER="$user"
+    VBOXDISK_GUEST_PASSFILE="$passfile"
+
+    guest_dir=""
+    for ((i = 0; i < 5; i++)); do
+        guest_dir="$(vbox_guest_mktemp_dir "$vm" 2>/dev/null || true)"
+        if [[ -n "$guest_dir" ]]; then
+            break
+        fi
+        sleep 2
+    done
+    if [[ -z "$guest_dir" ]]; then
+        log_error "$vm: Guest Control no acepto sesiones tras los reintentos"
+        return "$VBOXDISK_E_COMM"
+    fi
+    vbox_guest_track_dir "$guest_dir"
+
+    if ! vbox_guest_copy_to "$vm" "$guest_dir" "$GUEST_SCRIPT"; then
+        log_error "$vm: no se pudo copiar guest_ensure.sh al invitado"
+        return "$VBOXDISK_E_COMM"
+    fi
+    guest_pass="$guest_dir/$(basename "$passfile")"
+    if ! vbox_guest_copy_to "$vm" "$guest_dir" "$passfile"; then
+        log_error "$vm: no se pudo copiar el fichero de credenciales al invitado"
+        return "$VBOXDISK_E_COMM"
+    fi
+
+    args=(--size-mb "$(cfg_get "$vm" disk_size_mb)")
+    args+=(--mount "$(cfg_get "$vm" mount_point)")
+    args+=(--fstype "$(cfg_get "$vm" fs_type)")
+    args+=(--passfile "$guest_pass")
+    label="$(cfg_get "$vm" fs_label)"
+    device="$(cfg_get "$vm" disk_device)"
+    if [[ -n "$label" ]]; then
+        args+=(--label "$label")
+    fi
+    if [[ -n "$device" ]]; then
+        args+=(--device "$device")
+    fi
+    if [[ "$mode" == "probe" ]]; then
+        args+=(--probe)
+    fi
+
+    out="$(vbox_guest_run "$vm" "$guest_dir" "$VBOXDISK_GUEST_TIMEOUT" \
+        "$guest_dir/guest_ensure.sh" "${args[@]}" 2>&1)" || vb_rc=$?
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ -n "${VBOXDISK_LOG_FILE:-}" ]]; then
+            printf '%s\n' "$line" >>"$VBOXDISK_LOG_FILE"
+        fi
+        printf '%s\n' "$line" >&2
+    done <<<"$out"
+
+    storage_parse_guest_output "$out"
+    vbox_guest_rm "$vm" "$guest_dir"
+    vbox_guest_untrack_dir "$guest_dir"
+
+    if [[ -z "$GUEST_EXIT" ]]; then
+        if ((vb_rc != 0)); then
+            log_error "$vm: Guest Control no ejecuto el script invitado (VBoxManage rc=$vb_rc)"
+            return "$VBOXDISK_E_COMM"
+        fi
+        log_error "$vm: la salida del script invitado no contiene la centinela VBOXDISK_EXIT"
+        return "$VBOXDISK_E_STORAGE"
+    fi
+    if [[ "$GUEST_EXIT" != "0" ]]; then
+        log_warn "$vm: el script invitado termino con codigo $GUEST_EXIT"
+        return "$GUEST_EXIT"
+    fi
+    return 0
+}
+
+# apply_vm <vm>: las cinco etapas de la Subseccion del algoritmo.
+apply_vm() {
+    local vm="$1"
+    VBOXDISK_CURRENT_VM="$vm"
+    local disk size rc=0 ip ready_t=0 desired stored fp stored_fp power
+    local drift
+
+    disk="$(cfg_get "$vm" disk_file)"
+    size="$(cfg_get "$vm" disk_size_mb)"
+    desired="$(storage_desired_hash "$vm")"
+    stored="$(state_get "$vm" desired_hash || true)"
+    fp="$(storage_fingerprint "$vm" "$disk")"
+    stored_fp="$(state_get "$vm" fingerprint || true)"
+    power="$(vbox_power_state "$vm" || true)"
+
+    # Etapa 1: verificacion declarativa y preparacion del host.
+    stage_begin 1 "verificacion declarativa de $vm"
+    if [[ -n "$stored" && "$stored" == "$desired" && "$fp" == "$stored_fp" && "$power" == "poweroff" ]]; then
+        stage_end
+        log_info "$vm: sin cambios; la maquina coincide con lo declarado y permanece apagada"
+        return 0
+    fi
+    storage_ensure_medium "$vm" "$disk" "$size" || rc=$?
+    stage_end
+    if ((rc != 0)); then
+        return "$rc"
+    fi
+
+    # Etapa 2: encendido y disponibilidad de VBoxService.
+    stage_begin 2 "disponibilidad de $vm"
+    rc=0
+    ready_t="$(now_s)"
+    vbox_start "$vm" || rc=$?
+    if ((rc == 0)); then
+        if ! vbox_wait_ready "$vm" "$VBOXDISK_READY_TIMEOUT"; then
+            log_error "$vm: VBoxService no respondio en ${VBOXDISK_READY_TIMEOUT}s"
+            rc="$VBOXDISK_E_COMM"
+        fi
+    fi
+    ready_t=$(($(now_s) - ready_t))
+    stage_end
+    if ((rc != 0)); then
+        return "$rc"
+    fi
+    log_info "$vm: VBoxService respondio; maquina disponible en ${ready_t}s"
+
+    # Etapa 3: identificacion de la direccion IP en tiempo de ejecucion.
+    stage_begin 3 "identificacion de la direccion IP de $vm"
+    rc=0
+    ip="$(vbox_detect_ip "$vm" "$VBOXDISK_IP_TIMEOUT")" || rc=$?
+    stage_end
+    if ((rc != 0)); then
+        log_error "$vm: direccion IP no disponible tras ${VBOXDISK_IP_TIMEOUT}s (propiedad de Guest Additions y respaldo ARP)"
+        return "$VBOXDISK_E_COMM"
+    fi
+    log_info "$vm: direccion IP identificada: $ip"
+
+    # Etapa 4: sondeo de solo lectura y convergencia en el invitado.
+    stage_begin 4 "preparacion del almacenamiento en $vm"
+    rc=0
+    guest_dispatch "$vm" probe || rc=$?
+    if ((rc != 0)); then
+        stage_end
+        log_error "$vm: el sondeo de solo lectura fallo con codigo $rc"
+        return "$rc"
+    fi
+    drift=0
+    storage_drift "$vm" || drift=1
+    if ((drift == 1)); then
+        if ! confirm "$vm: el invitado difiere del ultimo registro de la solucion. Forzar la sincronizacion con lo declarado?"; then
+            stage_end
+            return "$VBOXDISK_E_CANCEL"
+        fi
+    fi
+    rc=0
+    guest_dispatch "$vm" converge || rc=$?
+    stage_end
+    if ((rc != 0)); then
+        log_error "$vm: la convergencia del almacenamiento fallo con codigo $rc"
+        return "$rc"
+    fi
+
+    # Etapa 5: verificacion final y registro en state.lock.
+    stage_begin 5 "verificacion y registro de $vm"
+    rc=0
+    storage_verify_guest "$vm" || rc=$?
+    if ((rc != 0)); then
+        stage_end
+        return "$rc"
+    fi
+    fp="$(storage_fingerprint "$vm" "$disk")"
+    state_set_vm "$vm" \
+        "desired_hash=$desired" \
+        "fingerprint=$fp" \
+        "ip=$ip" \
+        "last_run=$(date '+%Y-%m-%d %H:%M:%S')" \
+        "kv_device=$GUEST_DEVICE" \
+        "kv_table=$GUEST_TABLE" \
+        "kv_fstype=$GUEST_FSTYPE" \
+        "kv_uuid=$GUEST_UUID" \
+        "kv_mounted=$GUEST_MOUNTED" \
+        "kv_fstab=$GUEST_FSTAB" \
+        "table_b64=$(state_encode_table "$GUEST_TABLE_LINES")"
+    stage_end
+    log_info "$vm: convergencia verificada y registrada (disponible en ${ready_t}s)"
+    return 0
+}
+
+cmd_apply() {
+    validate_config 1
+    if ((DRY_RUN == 1)); then
+        local vm
+        while IFS= read -r vm; do
+            storage_plan_vm "$vm"
+        done < <(cfg_vms)
+        exit "$VBOXDISK_OK"
+    fi
+    if [[ ! -f "$GUEST_SCRIPT" ]]; then
+        die_cfg "no se encontro el script invitado: $GUEST_SCRIPT"
+    fi
+    state_init_dirs
+    state_open_log
+    total_start
+    local -a codes=()
+    local vm rc final
+    while IFS= read -r vm; do
+        rc=0
+        apply_vm "$vm" || rc=$?
+        codes+=("$rc")
+        if ((rc == VBOXDISK_E_CANCEL)); then
+            log_warn "se detiene la corrida por cancelacion del usuario"
+            break
+        fi
+    done < <(cfg_vms)
+    final="$(aggregate_code "${codes[@]}")"
+    log_info "resumen: tiempo total $(total_seconds)s; codigo de salida $final"
+    exit "$final"
+}
+
+cmd_status() {
+    validate_config 1
+    printf '%-12s %-16s %s\n' "MAQUINA" "ESTADO" "DIRECCION_IP"
+    local vm desired stored power ip estado
+    while IFS= read -r vm; do
+        desired="$(storage_desired_hash "$vm")"
+        stored="$(state_get "$vm" desired_hash || true)"
+        if [[ -z "$stored" ]]; then
+            estado="sin estado"
+        elif [[ "$stored" == "$desired" ]]; then
+            estado="sincronizada"
+        else
+            estado="desincronizada"
+        fi
+        power="$(vbox_power_state "$vm" || true)"
+        if [[ "$power" == "running" ]]; then
+            ip="$(vbox_detect_ip "$vm" 0 || printf '(no disponible)')"
+        else
+            ip="$(state_get "$vm" ip || true)"
+            if [[ -z "$ip" ]]; then
+                ip="(sin registro)"
+            fi
+            ip="$ip (apagada)"
+        fi
+        printf '%-12s %-16s %s\n' "$vm" "$estado" "$ip"
+    done < <(cfg_vms)
+}
+
+cmd_ld() {
+    local name="$1" run table
+    validate_config 0
+    if ! cfg_vms | grep -Fxq "$name"; then
+        die_cfg "la vm '$name' no esta declarada en $VBOXDISK_FILE"
+    fi
+    run="$(state_get "$name" last_run || true)"
+    if [[ -z "$run" ]]; then
+        die_cfg "no hay ningun registro en state.lock para $name"
+    fi
+    say "registro de $name: $run"
+    table="$(state_table_b64 "$name" || true)"
+    if [[ -z "$table" ]]; then
+        say "(sin tabla de particiones registrada)"
+    else
+        printf '%s\n' "$table"
+    fi
+}
+
+CMD=""
+VBOXDISK_FILE="./vdisk.yml"
+DRY_RUN=0
+VBOXDISK_ASSUME_YES=0
+LD_NAME=""
+
+while (($#)); do
+    case "$1" in
+        apply | status | ld)
+            if [[ -n "$CMD" ]]; then
+                die_cfg "solo se admite una orden por corrida"
+            fi
+            CMD="$1"
+            ;;
+        -f | --file)
+            if (($# < 2)); then
+                die_cfg "la opcion $1 requiere un argumento"
+            fi
+            VBOXDISK_FILE="$2"
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN=1
+            ;;
+        -y | --yes)
+            VBOXDISK_ASSUME_YES=1
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        --version)
+            say "vboxdisk $VBOXDISK_VERSION"
+            exit 0
+            ;;
+        -*)
+            die_cfg "bandera desconocida: $1"
+            ;;
+        *)
+            if [[ "$CMD" == "ld" && -z "$LD_NAME" ]]; then
+                LD_NAME="$1"
+            else
+                die_cfg "argumento inesperado: $1"
+            fi
+            ;;
+    esac
+    shift
+done
+
+if [[ -z "$CMD" ]]; then
+    usage >&2
+    exit "$VBOXDISK_E_CONFIG"
+fi
+if ((DRY_RUN == 1)) && [[ "$CMD" != "apply" ]]; then
+    die_cfg "la opcion --dry-run solo aplica a la orden apply"
+fi
+
+case "$CMD" in
+    apply)
+        cmd_apply
+        ;;
+    status)
+        cmd_status
+        ;;
+    ld)
+        if [[ -z "$LD_NAME" ]]; then
+            die_cfg "la orden ld requiere el nombre de una vm"
+        fi
+        cmd_ld "$LD_NAME"
+        ;;
+esac

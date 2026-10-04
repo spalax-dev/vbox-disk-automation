@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Doble de VBoxManage para las pruebas: cubre list vms y showvminfo
+# --machinereadable, suficiente para la verificacion declarativa sin vm real.
+if [[ -n "${VBOXDISK_MOCK_LOG:-}" ]]; then
+    printf '%s\n' "$*" >>"$VBOXDISK_MOCK_LOG"
+fi
+case "${1:-}" in
+    list)
+        printf '%s\n' '"VM1" {aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}'
+        printf '%s\n' '"VM2" {11111111-2222-3333-4444-555555555555}'
+        ;;
+    showvminfo)
+        printf 'name="%s"\n' "${2:-}"
+        printf '%s\n' 'VMState="poweroff"'
+        printf '%s\n' 'macaddress1="080027F2C586"'
+        printf '%s\n' 'storagecontrollername0="IDE"'
+        printf '%s\n' 'storagecontrollername1="SATA"'
+        printf '%s\n' 'SATA-portcount="30"'
+        printf '%s\n' 'SATA-0-0="/home/jorge/.mvs/debian/VM1/VM1-disk1.qcow"'
+        ;;
+    *)
+        exit 0
+        ;;
+esac

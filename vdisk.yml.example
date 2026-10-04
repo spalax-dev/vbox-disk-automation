@@ -1,0 +1,34 @@
+# vdisk.yml.example: plantilla declarativa de vboxdisk.
+#
+# Copie este fichero como vdisk.yml (o pase otro con vboxdisk apply -f FILE) y
+# rellene un bloque por cada maquina virtual. La clave de primer nivel es el
+# nombre exacto de la vm tal como aparece en VBoxManage list vms.
+#
+# Claves obligatorias: vm_user, disk_file, disk_size_mb, mount_point, fs_type.
+# Credenciales (obligatoria una de las dos): vm_pass o vm_pass_file.
+# Claves opcionales: disk_device, fs_label.
+#
+# Precedencia de valores: variables de entorno VBOXDISK_* > este archivo > defecto.
+
+VM1:
+  vm_user: debian
+  vm_pass: "cambia-esta-clave"
+  # Ruta en el host del disco virtual de datos; si no existe se crea (VDI).
+  disk_file: /home/jorge/.mvs/debian/VM1/VM1-datos.vdi
+  disk_size_mb: 4096
+  # disk_device: /dev/sdb   # opcional: fija el disco; sin esta clave se
+  #                          # detecta por su tamano declarado en el invitado
+  mount_point: /mnt/datos
+  fs_type: ext4
+  fs_label: datos-vm1       # opcional: etiqueta del sistema de archivos
+
+VM2:
+  vm_user: debian
+  # Alternativa a vm_pass: fichero legible solo por el usuario, cuyo contenido
+  # es unicamente la contrasena (sin terminador de linea).
+  vm_pass_file: /home/jorge/.secrets/vm2.pass
+  disk_file: /home/jorge/.mvs/debian/VM2/VM2-datos.vdi
+  disk_size_mb: 8192
+  mount_point: /srv/datos
+  fs_type: xfs
+  fs_label: datos-vm2

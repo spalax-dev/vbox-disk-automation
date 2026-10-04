@@ -1,0 +1,16 @@
+VM1:
+  vm_user: debian
+  vm_pass: "secreto"
+  disk_file: /no/existe/VM1-datos.vdi
+  disk_size_mb: 4096
+  mount_point: /mnt/datos
+  fs_type: ext4
+  fs_label: datos-vm1
+
+VM2:
+  vm_user: debian
+  vm_pass_file: /etc/hostname
+  disk_file: /no/existe/VM2-datos.vdi
+  disk_size_mb: 8192
+  mount_point: /srv/datos
+  fs_type: xfs

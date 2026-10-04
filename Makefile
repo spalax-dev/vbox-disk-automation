@@ -1,0 +1,81 @@
+# Makefile: sistema de construccion de vboxdisk.
+# install encadena checkdeps, lint y test y solo entonces copia los ficheros
+# en las rutas XDG del usuario, sin privilegios.
+
+SHELL := /bin/bash
+.DEFAULT_GOAL := help
+
+HOME ?= $(shell echo $$HOME)
+XDG_DATA_HOME ?= $(HOME)/.local/share
+BINDIR := $(HOME)/.local/bin
+DATADIR := $(XDG_DATA_HOME)/vboxdisk
+
+.PHONY: help checkdeps lint test install uninstall
+
+help:
+	@printf '%s\n' \
+	'vboxdisk: make <objetivo>' \
+	'' \
+	'  help        Muestra esta ayuda (objetivo por defecto)' \
+	'  checkdeps   Comprueba las dependencias de ejecucion y de desarrollo' \
+	'  lint        Ejecuta ShellCheck sobre el punto de entrada y las bibliotecas' \
+	'  test        Ejecuta las pruebas unitarias con BATS' \
+	'  install     Verifica, prueba e instala en las rutas XDG del usuario' \
+	'  uninstall   Retira el ejecutable, las bibliotecas y el bloque del PATH'
+
+checkdeps:
+	@missing=""; \
+	for d in bash VBoxManage yq ip; do \
+		command -v "$$d" >/dev/null 2>&1 || missing="$$missing $$d"; \
+	done; \
+	for d in make shellcheck bats; do \
+		command -v "$$d" >/dev/null 2>&1 || missing="$$missing $$d"; \
+	done; \
+	if [[ -n "$$missing" ]]; then \
+		printf 'checkdeps: faltan dependencias:%s\n' "$$missing" >&2; \
+		printf 'checkdeps: no se ha instalado nada\n' >&2; \
+		exit 1; \
+	fi; \
+	printf 'checkdeps: dependencias de ejecucion y de desarrollo presentes\n'
+
+lint:
+	shellcheck src/vboxdisk src/lib/*.sh
+	@printf 'lint: ShellCheck sin observaciones\n'
+
+test:
+	bats tests/
+	@printf 'test: pruebas unitarias superadas\n'
+
+install:
+	@$(MAKE) --no-print-directory checkdeps
+	@$(MAKE) --no-print-directory lint
+	@$(MAKE) --no-print-directory test
+	install -d "$(BINDIR)" "$(DATADIR)/lib"
+	install -m 0755 src/vboxdisk "$(BINDIR)/vboxdisk"
+	install -m 0644 src/lib/*.sh "$(DATADIR)/lib/"
+	install -m 0644 vdisk.yml.example "$(DATADIR)/"
+	@for rc in "$(HOME)/.bashrc" "$(HOME)/.zshrc"; do \
+		[[ -f "$$rc" ]] || continue; \
+		grep -Fq '.local/bin' "$$rc" && continue; \
+		printf '\n# >>> vboxdisk >>>\nexport PATH="$$HOME/.local/bin:$$PATH"\n# <<< vboxdisk <<<\n' >>"$$rc"; \
+		printf 'install: PATH anadido en %s\n' "$$rc"; \
+	done
+	@printf 'install: ejecutable en %s\n' "$(BINDIR)/vboxdisk"
+	@printf 'install: bibliotecas y plantilla en %s\n' "$(DATADIR)/"
+	@printf 'install: abra una sesion nueva para usar la orden vboxdisk\n'
+
+uninstall:
+	@rm -f "$(BINDIR)/vboxdisk"
+	@rm -rf "$(DATADIR)/lib"
+	@rm -f "$(DATADIR)/vdisk.yml.example"
+	@for rc in "$(HOME)/.bashrc" "$(HOME)/.zshrc"; do \
+		[[ -f "$$rc" ]] || continue; \
+		grep -Fq '# >>> vboxdisk >>>' "$$rc" || continue; \
+		awk '/^# >>> vboxdisk >>>$$/ { skip = 1; next } \
+			skip == 1 && /^# <<< vboxdisk <<<$$/ { skip = 0; next } \
+			skip == 0 { print }' "$$rc" >"$$rc.vboxdisk.tmp" && \
+			cat "$$rc.vboxdisk.tmp" >"$$rc" && rm -f "$$rc.vboxdisk.tmp"; \
+		printf 'uninstall: bloque del PATH retirado de %s\n' "$$rc"; \
+	done
+	@printf 'uninstall: retirado el ejecutable y las bibliotecas\n'
+	@printf 'uninstall: se conservan state.lock, las bitacoras y vdisk.yml\n'

@@ -1,0 +1,7 @@
+VM9:
+  vm_user: debian
+  vm_pass: "secreto"
+  disk_file: /no/existe/VM9-datos.vdi
+  disk_size_mb: 4096
+  mount_point: /mnt/datos
+  fs_type: ext4

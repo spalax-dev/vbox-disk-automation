@@ -1,0 +1,6 @@
+VM1:
+  vm_user: debian
+  vm_pass: "secreto"
+  disk_file: /no/existe/VM1-datos.vdi
+  mount_point: /mnt/datos
+  fs_type: ext4

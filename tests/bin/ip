@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Doble de ip para las pruebas: tabla ARP vacia, sin vecinos que puedan
+# corresponder a la direccion MAC del doble de VBoxManage.
+if [[ "${1:-}" == "neigh" ]]; then
+    exit 0
+fi
+exit 0
