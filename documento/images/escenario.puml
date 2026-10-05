@@ -8,29 +8,29 @@ skinparam ranksep 45
 skinparam wrapWidth 170
 skinparam defaultTextAlignment center
 
-node "Equipo host\nLinux · 192.168.1.10" as HOST #E8F4FC {
+node "Equipo host\nLinux · 192.168.1.6" as HOST #E8F4FC {
   component "Solución en Bash\nmain.sh · lib/ · config/" as SOL #FFFFFF
-  component "Interfaz en puente\n(ej.: enp2s0) · .10" as HNIC #FFFFFF
+  component "Interfaz en puente\n(ej.: wlo1) · .6" as HNIC #FFFFFF
   component "Oracle VM VirtualBox 7.2\nhipervisor tipo 2 · VBoxManage" as VBox #FFFFFF
 }
 
 cloud "Red local 192.168.1.0/24\nmodo puente (bridged)" as LAN #E8F5E9
 
-node "VM1\nDebian 13 · 192.168.1.51" as VM1 #FFF8E1 {
+node "VM1\nDebian 13 · 192.168.1.16" as VM1 #FFF8E1 {
   component "Interfaz en puente\n(ej.: enp0s3)" as NIC1 #FFFFFF
   component "Guest Additions\nVBoxService" as GA1 #FFFFFF
   database "VM1-datos.vdi\n/mnt/datos (ext4)" as D1 #FFFFFF
 }
 
-node "VM2\nDebian 13 · 192.168.1.52" as VM2 #FFF8E1 {
+node "VM2\nDebian 13 · 192.168.1.18" as VM2 #FFF8E1 {
   component "Interfaz en puente\n(ej.: enp0s3)" as NIC2 #FFFFFF
   component "Guest Additions\nVBoxService" as GA2 #FFFFFF
   database "VM2-datos.vdi\n/srv/datos (xfs)" as D2 #FFFFFF
 }
 
 HNIC --> LAN : "medio físico"
-LAN -[#E53935,dashed]-> NIC1 : "2. 192.168.1.51 (ARP)"
-LAN -[#E53935,dashed]-> NIC2 : "2. 192.168.1.52 (ARP)"
+LAN -[#E53935,dashed]-> NIC1 : "2. 192.168.1.16 (ARP)"
+LAN -[#E53935,dashed]-> NIC2 : "2. 192.168.1.18 (ARP)"
 
 SOL -[#1E88E5,bold]-> VBox : "1. VBoxManage startvm"
 VBox .[#1E88E5,bold].> GA1 : "3. guestcontrol run"

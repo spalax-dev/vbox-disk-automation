@@ -102,6 +102,34 @@ El carácter no destructivo descansa en dos reglas. Primera: ninguna operación 
 
 Antes de cualquier corrida contra una \vm{} real, la solución se somete a los dos niveles automatizados que encadena \texttt{make install}, según se describió en la Subsección~\ref{sub:build}. El primero es estático: ShellCheck analiza el punto de entrada y las bibliotecas y reporta expansiones sin comillas, rutas no protegidas y demás defectos característicos de los programas en shell sin ejecutarlos \parencite{shellcheck}. El segundo son pruebas unitarias con BATS: los ficheros de \texttt{tests/} montan en la ruta de búsqueda un doble de \texttt{VBoxManage} que responde con salidas fijas, de modo que las funciones se ejercitan sin hipervisor, sin privilegios y en milisegundos \parencite{bats_testing}. Las pruebas cubren el análisis de argumentos y la conversión de códigos de salida (\texttt{cli.bats}), la validación y la precedencia de \texttt{vdisk.yml} (\texttt{config.bats}) y el cálculo de huellas, la lectura y escritura de \texttt{state.lock} y el registro de bitácoras (\texttt{state.bats}). El doble permite además reproducir los caminos de error de la Tabla~\ref{tab:casos}, como una \vm{} inexistente o una dirección IP no disponible, así como la interpretación de la salida \texttt{clave=valor} y de la centinela del script invitado, sin preparar ninguna condición de fallo en las máquinas reales.
 
+\subsection{Preparación y Ficha Técnica de las Máquinas Virtuales}
+\label{sub:ficha}
+
+Las pruebas de funcionamiento se ejecutan sobre dos máquinas virtuales, \texttt{VM1} y \texttt{VM2}, ambas con Debian~13 (trixie) de 64~bits, según el escenario descrito en la Subsección~\ref{sub:escenario}. El requisito central del invitado son las \guestadditions{}, que en Debian suministra el paquete \texttt{virtualbox-guest-utils} con el servicio \texttt{VBoxService} y la utilidad \texttt{VBoxControl}: sin ellos la etapa~2 no podría esperar la disponibilidad de la \vm{} ni la etapa~3 leer la propiedad de dirección IP \parencite{virtualbox_guestadditions}. Debian~13 no ofrece ese paquete en sus repositorios oficiales y solo se localiza en \texttt{contrib} de la distribución en desarrollo, de modo que en cada \vm{} se añadió el repositorio Debian Fast Track \parencite{debian_fasttrack} y a partir de él se instaló \texttt{virtualbox-guest-utils}. Las restantes dependencias del invitado, como \texttt{parted}, util-linux o las utilidades de ext4 y xfs, se declaran en la Subsección~\ref{sub:build}.
+
+La Tabla~\ref{tab:ficha} reúne la ficha técnica de las dos máquinas al momento de las pruebas. Las direcciones las ofrece el servidor DHCP de la red local, por lo que pueden cambiar entre reinicios; la solución no las recibe como entrada y las identifica en tiempo de ejecución como se describió en la Subsección~\ref{sub:arquitectura}, mecanismo verificado en este entorno con \texttt{VBoxManage guestproperty get} sobre la propiedad \texttt{/VirtualBox/GuestInfo/Net/0/V4/IP}.
+
+\begin{table}[H]
+    \centering
+    \caption{Ficha técnica de las máquinas virtuales del escenario}
+    \label{tab:ficha}
+    \begin{tabular}{@{}lp{5.4cm}p{5.4cm}@{}}
+        \toprule
+        \textbf{Característica} & \textbf{VM1} & \textbf{VM2} \\
+        \midrule
+        Sistema operativo & Debian~13 (trixie), 64 bits & Debian~13 (trixie), 64 bits \\
+        Procesador & 1 vCPU & 1 vCPU \\
+        Memoria & 512\,MB & 512\,MB \\
+        Disco del sistema & 6\,GiB (\texttt{qcow2}, SATA) & 6\,GiB (\texttt{qcow2}, SATA) \\
+        Disco de datos & 4\,GiB (\texttt{VDI}) & 8\,GiB (\texttt{VDI}) \\
+        Montaje declarado & ext4 en \texttt{/mnt/datos} & xfs en \texttt{/srv/datos} \\
+        Adaptador de red & Modo puente, \texttt{enp0s3} & Modo puente, \texttt{enp0s3} \\
+        Dirección IP & \texttt{192.168.1.16} & \texttt{192.168.1.18} \\
+        Guest Additions & \texttt{virtualbox-guest-utils} (Fast Track) & \texttt{virtualbox-guest-utils} (Fast Track) \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
 \subsection{Evidencias de las Pruebas de Funcionamiento}
 \label{sub:evidencias}
 
