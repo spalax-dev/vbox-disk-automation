@@ -1,10 +1,26 @@
 #!/usr/bin/env bash
+# Copyright 2026 spalax-dev
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 # config.sh: lectura, validacion y precedencia de vdisk.yml con yq.
 # Precedencia: variables de entorno VBOXDISK_* > bloque en vdisk.yml > defecto.
 
+# Claves admitidas y claves obligatorias de cada bloque de vdisk.yml.
 VBOXDISK_KEYS=(vm_user vm_pass vm_pass_file disk_file disk_size_mb disk_device mount_point fs_type fs_label)
 VBOXDISK_REQUIRED=(vm_user disk_file disk_size_mb mount_point fs_type)
 
+# cfg_is_reserved <clave>: 0 si la clave pertenece al conjunto reservado.
 cfg_is_reserved() {
     local key="$1" k
     for k in "${VBOXDISK_KEYS[@]}"; do
@@ -15,6 +31,7 @@ cfg_is_reserved() {
     return 1
 }
 
+# cfg_vms: nombres de primer nivel del archivo, es decir, las vm declaradas.
 cfg_vms() {
     yq -r '. | keys | .[]' "$VBOXDISK_FILE"
 }
@@ -34,6 +51,9 @@ cfg_get() {
     printf '%s' "$val"
 }
 
+# cfg_validate <fichero>: validacion completa antes de tocar el hipervisor.
+# 1) existencia, lectura y sintaxis YAML; 2) nombres y claves reservadas;
+# 3) obligatorias y credenciales; 4) valores concretos de cada clave.
 cfg_validate() {
     local file="$1"
     if [[ ! -f "$file" || ! -r "$file" ]]; then
@@ -45,7 +65,9 @@ cfg_validate() {
         return 1
     fi
     local vms
-    vms="$(cfg_vms 2>/dev/null || true)"
+    # Se listan los nombres del fichero recibido, no del global VBOXDISK_FILE,
+    # de modo que validate sirve tambien para examinar otro archivo.
+    vms="$(yq -r '. | keys | .[]' "$file" 2>/dev/null || true)"
     if [[ -z "$vms" ]]; then
         log_error "no hay ninguna vm declarada en $file"
         return 1
@@ -112,6 +134,7 @@ cfg_validate() {
     return 0
 }
 
+# cfg_each_vm: alias de cfg_vms para recorrer las maquinas declaradas.
 cfg_each_vm() {
     cfg_vms
 }

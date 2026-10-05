@@ -1,14 +1,32 @@
 #!/usr/bin/env bash
+# Copyright 2026 spalax-dev
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 # Doble de VBoxManage para las pruebas: cubre list vms y showvminfo
 # --machinereadable, suficiente para la verificacion declarativa sin vm real.
+# Opcional: las pruebas pueden registrar cada invocacion del doble.
 if [[ -n "${VBOXDISK_MOCK_LOG:-}" ]]; then
     printf '%s\n' "$*" >>"$VBOXDISK_MOCK_LOG"
 fi
 case "${1:-}" in
+    # Relato de maquinas declaradas: VM1 y VM2 con UUIDs fijos.
     list)
         printf '%s\n' '"VM1" {aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}'
         printf '%s\n' '"VM2" {11111111-2222-3333-4444-555555555555}'
         ;;
+    # Configuracion legible por maquina: apagada, con un adaptador y un
+    # controlador SATA que ya contiene el disco del sistema.
     showvminfo)
         printf 'name="%s"\n' "${2:-}"
         printf '%s\n' 'VMState="poweroff"'

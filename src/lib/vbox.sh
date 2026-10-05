@@ -1,12 +1,29 @@
 #!/usr/bin/env bash
+# Copyright 2026 spalax-dev
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 # vbox.sh: envoltorios de VBoxManage (arranque, disponibilidad, IP y guestcontrol).
 
+# Credenciales de la sesion con el invitado y tiempos por defecto; estos
+# ultimos se sobreescriben con las variables de entorno VBOXDISK_*.
 VBOXDISK_GUEST_USER=""
 VBOXDISK_GUEST_PASSFILE=""
 VBOXDISK_READY_TIMEOUT="${VBOXDISK_READY_TIMEOUT:-120}"
 VBOXDISK_IP_TIMEOUT="${VBOXDISK_IP_TIMEOUT:-60}"
 VBOXDISK_GUEST_TIMEOUT="${VBOXDISK_GUEST_TIMEOUT:-300}"
 
+# vbox_require: dependencias de ejecucion en el host.
 vbox_require() {
     if ! have_cmd VBoxManage; then
         die "$VBOXDISK_E_CONFIG" "VBoxManage no esta disponible en el host (dependencia de ejecucion)"
@@ -19,6 +36,7 @@ vbox_require() {
     fi
 }
 
+# vbox_vm_exists <vm>: 0 si el nombre figura en VBoxManage list vms.
 vbox_vm_exists() {
     local name="$1"
     VBoxManage list vms 2>/dev/null | awk -F'"' -v n="$name" '$2 == n { found = 1 } END { exit found ? 0 : 1 }'
@@ -31,20 +49,25 @@ vbox_info() {
         awk -F'"' -v k="$key" '$1 == k "=" { print $2; found = 1 } END { exit found ? 0 : 1 }'
 }
 
+# vbox_power_state <vm>: estado actual de la maquina (clave VMState).
 vbox_power_state() {
     vbox_info "$1" VMState
 }
 
+# vbox_start <vm>: enciende en modo headless si hace falta y aguarda running.
 vbox_start() {
     local vm="$1" i state
     state="$(vbox_power_state "$vm" || true)"
     case "$state" in
         running)
+            # Ya estaba encendida: nada que hacer.
             return 0
             ;;
         starting)
+            # Arranque en curso: solo se aguarda a que alcance running.
             ;;
         "" | poweroff | aborted | saved | paused | stuck | teleported)
+            # Cualquier estado apagado o guardado admite startvm headless.
             if ! VBoxManage startvm "$vm" --type headless >/dev/null 2>&1; then
                 log_error "no se pudo encender $vm con VBoxManage startvm"
                 return "$VBOXDISK_E_COMM"
@@ -99,6 +122,7 @@ vbox_wait_ready() {
     done
 }
 
+# vbox_guestproperty_ip <vm>: propiedad Net/0/V4/IP cuando es una IPv4 valida.
 vbox_guestproperty_ip() {
     local vm="$1" out
     out="$(VBoxManage guestproperty get "$vm" /VirtualBox/GuestInfo/Net/0/V4/IP 2>/dev/null || true)"
@@ -110,6 +134,8 @@ vbox_guestproperty_ip() {
     return 1
 }
 
+# vbox_mac <vm>: MAC del adaptador 1 con dos puntos y en minusculas, tal como
+# la espera la tabla ARP.
 vbox_mac() {
     local raw
     raw="$(vbox_info "$1" macaddress1 || true)"
@@ -152,6 +178,8 @@ vbox_detect_ip() {
     done
 }
 
+# vbox_gc <vm> <argumentos...>: sesion guestcontrol con el usuario y el fichero
+# de credenciales preparados por guest_dispatch.
 vbox_gc() {
     local vm="$1"
     shift
@@ -160,6 +188,8 @@ vbox_gc() {
         --passwordfile "$VBOXDISK_GUEST_PASSFILE" "$@"
 }
 
+# vbox_guest_mktemp_dir <vm>: directorio temporal en el invitado; la salida
+# "Directory name: <ruta>" se reduce a la ruta absoluta.
 vbox_guest_mktemp_dir() {
     local out path
     out="$(vbox_gc "$1" mktemp --directory --tmpdir=/tmp 'vboxdisk.XXXXXX')" || return $?
@@ -171,6 +201,7 @@ vbox_guest_mktemp_dir() {
     printf '%s' "$path"
 }
 
+# vbox_guest_copy_to <vm> <dir> <fichero>: copia al invitado en silencio.
 vbox_guest_copy_to() {
     local vm="$1" dir="$2" file="$3"
     vbox_gc "$vm" copyto --quiet --target-directory="$dir" "$file"
@@ -199,10 +230,12 @@ vbox_guest_rm() {
 # Directorios temporales del invitado abiertos en esta corrida.
 VBOXDISK_GUEST_DIRS=()
 
+# vbox_guest_track_dir <dir>: anade el directorio a los pendientes de limpieza.
 vbox_guest_track_dir() {
     VBOXDISK_GUEST_DIRS+=("$1")
 }
 
+# vbox_guest_untrack_dir <dir>: retira el directorio ya borrado.
 vbox_guest_untrack_dir() {
     local dir="$1" i
     for i in "${!VBOXDISK_GUEST_DIRS[@]}"; do

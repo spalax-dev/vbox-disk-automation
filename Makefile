@@ -1,3 +1,17 @@
+# Copyright 2026 spalax-dev
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 # Makefile: sistema de construccion de vboxdisk.
 # install encadena checkdeps, lint y test y solo entonces copia los ficheros
 # en las rutas XDG del usuario, sin privilegios.
@@ -12,6 +26,7 @@ DATADIR := $(XDG_DATA_HOME)/vboxdisk
 
 .PHONY: help checkdeps lint test install uninstall
 
+# help: lista de objetivos (objetivo por defecto).
 help:
 	@printf '%s\n' \
 	'vboxdisk: make <objetivo>' \
@@ -23,6 +38,7 @@ help:
 	'  install     Verifica, prueba e instala en las rutas XDG del usuario' \
 	'  uninstall   Retira el ejecutable, las bibliotecas y el bloque del PATH'
 
+# checkdeps: comprueba dependencias de ejecucion y de desarrollo sin instalar nada.
 checkdeps:
 	@missing=""; \
 	for d in bash VBoxManage yq ip; do \
@@ -38,14 +54,18 @@ checkdeps:
 	fi; \
 	printf 'checkdeps: dependencias de ejecucion y de desarrollo presentes\n'
 
+# lint: ShellCheck sobre el punto de entrada y las bibliotecas.
 lint:
 	shellcheck src/vboxdisk src/lib/*.sh
 	@printf 'lint: ShellCheck sin observaciones\n'
 
+# test: pruebas unitarias con BATS.
 test:
 	bats tests/
 	@printf 'test: pruebas unitarias superadas\n'
 
+# install: encadena checkdeps, lint y test y solo entonces copia los ficheros
+# a las rutas XDG del usuario y anade el directorio al PATH de los shells.
 install:
 	@$(MAKE) --no-print-directory checkdeps
 	@$(MAKE) --no-print-directory lint
@@ -64,6 +84,8 @@ install:
 	@printf 'install: bibliotecas y plantilla en %s\n' "$(DATADIR)/"
 	@printf 'install: abra una sesion nueva para usar la orden vboxdisk\n'
 
+# uninstall: retira el ejecutable, las bibliotecas y el bloque del PATH,
+# conservando state.lock, las bitacoras y vdisk.yml.
 uninstall:
 	@rm -f "$(BINDIR)/vboxdisk"
 	@rm -rf "$(DATADIR)/lib"

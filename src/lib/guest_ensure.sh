@@ -1,4 +1,18 @@
 #!/usr/bin/env bash
+# Copyright 2026 spalax-dev
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 # guest_ensure.sh: se copia al invitado en cada corrida y aplica las tres
 # guardas de almacenamiento (tabla, sistema de archivos y montaje).
 # Modos: --probe (solo lectura) y convergencia. Termina siempre con la centinela
@@ -21,6 +35,7 @@ Uso: guest_ensure.sh [--probe] --size-mb N --mount /ruta --fstype ext4|xfs
 EOF
 }
 
+# Analisis de los argumentos del script invitado.
 while (($#)); do
     case "$1" in
         --probe)
@@ -62,6 +77,8 @@ while (($#)); do
     shift
 done
 
+# finish <codigo>: destruye el fichero de credenciales, emite la centinela
+# VBOXDISK_EXIT=<codigo> por stdout y termina con ese mismo codigo.
 finish() {
     local rc="$1"
     if [[ -n "${PASSFILE:-}" && -f "${PASSFILE:-}" ]]; then
@@ -71,6 +88,7 @@ finish() {
     exit "$rc"
 }
 
+# Validacion de los argumentos obligatorios antes de cualquier accion.
 if [[ -z "$SIZE_MB" || -z "$MOUNT" || -z "$FSTYPE" ]]; then
     usage >&2
     finish 1
@@ -98,6 +116,7 @@ if [[ "$EUID" -ne 0 && "${VBOXDISK_ROOTED:-0}" != "1" ]]; then
     finish 1
 fi
 
+# Estado observado del dispositivo: lo completa collect() y lo vuelca emit_state().
 G_DEV=""
 G_PART=""
 G_TABLE="none"
@@ -107,6 +126,8 @@ G_MOUNTED="no"
 G_FSTAB="no"
 G_SIZE_MB=0
 
+# emit_state: vuelca el estado observado en pares clave=valor por stdout,
+# terminando con la tabla de lsblk como lineas TABLE_LINE=.
 emit_state() {
     echo "DEVICE=$G_DEV"
     echo "SIZE_MB=$G_SIZE_MB"
@@ -125,11 +146,15 @@ emit_state() {
     fi
 }
 
+# fail <mensaje> [codigo]: mensaje de error en stderr y fin con la centinela
+# (codigo 3, almacenamiento, si no se indica otro).
 fail() {
     echo "guest_ensure: $1" >&2
     finish "${2:-3}"
 }
 
+# detect_device: el indicado con --device, o el disco libre cuyo tamano
+# coincide con el declarado (tolerancia de 1 MB).
 detect_device() {
     local name size type want tol diff best=""
     if [[ -n "$DEVICE_OPT" ]]; then
@@ -163,6 +188,8 @@ detect_device() {
     G_DEV="$best"
 }
 
+# collect: observa el dispositivo actual sin modificarlo y rellena las
+# variables G_* (tabla, particion, fs, UUID, montaje y fstab).
 collect() {
     local pttype
     G_PART=""
@@ -194,6 +221,8 @@ collect() {
     return 0
 }
 
+# wait_for_partition: aguarda hasta 15 s a que udev publique la particion
+# recien creada por parted.
 wait_for_partition() {
     local i
     for ((i = 0; i < 15; i++)); do
@@ -206,6 +235,8 @@ wait_for_partition() {
     return 1
 }
 
+# ensure_label: aplica la etiqueta declarada si difiere de la actual
+# (e2label en ext4, xfs_admin en xfs).
 ensure_label() {
     local current
     [[ -n "$LABEL" && -n "$G_PART" ]] || return 0
@@ -224,6 +255,8 @@ ensure_label() {
     return 0
 }
 
+# ensure_fstab: anade la entrada UUID al montar solo si aun no existe;
+# pass 0 en xfs y 2 en ext4, segun la convencion de fsck.
 ensure_fstab() {
     local opts pass line
     grep -qE "^[[:space:]]*UUID=${G_UUID}[[:space:]]" /etc/fstab 2>/dev/null && return 0
@@ -240,6 +273,8 @@ ensure_fstab() {
     return 0
 }
 
+# converge: aplicacion de las tres guardas en orden, cada una tras comprobar
+# que su condicion aun no se cumple.
 converge() {
     # Guarda 1: tabla de particiones.
     collect
@@ -300,6 +335,8 @@ converge() {
     return 0
 }
 
+# Flujo principal: detectar el disco y, segun el modo, solo sondear o
+# converger; en ambos casos se emite siempre el estado y la centinela.
 detect_device
 
 if ((PROBE == 1)); then

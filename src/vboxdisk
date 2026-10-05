@@ -1,4 +1,18 @@
 #!/usr/bin/env bash
+# Copyright 2026 spalax-dev
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 # shellcheck disable=SC2034  # variables compartidas entre la
 # entrada y las demas bibliotecas de src/lib.
 # vboxdisk: punto de entrada. Analiza la linea de comandos, carga las
@@ -9,6 +23,8 @@ set -euo pipefail
 SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 
+# Localizacion de las bibliotecas: junto al punto de entrada (repositorio) o
+# en las rutas XDG cuando el paquete esta instalado con make install.
 if [[ -f "$SCRIPT_DIR/lib/common.sh" ]]; then
     LIB_DIR="$SCRIPT_DIR/lib"
 else
@@ -24,8 +40,10 @@ for _lib in common config state vbox storage; do
 done
 GUEST_SCRIPT="$LIB_DIR/guest_ensure.sh"
 
+# Al terminar por cualquier via se limpian los temporales del host y del invitado.
 trap cleanup_tmps EXIT
 
+# usage: ayuda de la interfaz, por stdout en --help y por stderr sin orden.
 usage() {
     cat <<'EOF'
 Uso: vboxdisk <orden> [opciones]
@@ -47,6 +65,7 @@ la vm | 3 almacenamiento o verificacion | 4 cancelado por el usuario
 EOF
 }
 
+# die_cfg: error de uso o de configuracion siempre con el codigo 1.
 die_cfg() { die "$VBOXDISK_E_CONFIG" "$@"; }
 
 # validate_config <con_hipervisor 0|1>: carga y validacion previa a actuar.
@@ -262,6 +281,8 @@ apply_vm() {
     return 0
 }
 
+# cmd_apply: valida la configuracion, aplica --dry-run o recorre las vm una a
+# una y agrega al final el codigo de mayor severidad de la corrida.
 cmd_apply() {
     validate_config 1
     if ((DRY_RUN == 1)); then
@@ -293,6 +314,7 @@ cmd_apply() {
     exit "$final"
 }
 
+# cmd_status: tabla de sincronizacion e IP por vm, de solo lectura.
 cmd_status() {
     validate_config 1
     printf '%-12s %-16s %s\n' "MAQUINA" "ESTADO" "DIRECCION_IP"
@@ -321,6 +343,7 @@ cmd_status() {
     done < <(cfg_vms)
 }
 
+# cmd_ld <nombre>: ultima corrida registrada y tabla de particiones de una vm.
 cmd_ld() {
     local name="$1" run table
     validate_config 0
@@ -340,6 +363,7 @@ cmd_ld() {
     fi
 }
 
+# Analisis de la linea de comandos: una unica orden mas sus opciones.
 CMD=""
 VBOXDISK_FILE="./vdisk.yml"
 DRY_RUN=0
@@ -389,6 +413,7 @@ while (($#)); do
     shift
 done
 
+# Validaciones globales posteriores al analisis.
 if [[ -z "$CMD" ]]; then
     usage >&2
     exit "$VBOXDISK_E_CONFIG"
@@ -397,6 +422,7 @@ if ((DRY_RUN == 1)) && [[ "$CMD" != "apply" ]]; then
     die_cfg "la opcion --dry-run solo aplica a la orden apply"
 fi
 
+# Despacho de la orden al manejador correspondiente.
 case "$CMD" in
     apply)
         cmd_apply

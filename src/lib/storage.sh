@@ -1,7 +1,23 @@
 #!/usr/bin/env bash
+# Copyright 2026 spalax-dev
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 # storage.sh: verificacion declarativa, huellas en el host y lectura de la
 # salida clave=valor del script invitado.
 
+# storage_desired_hash <vm>: sha256 del bloque declarado convertido a JSON,
+# la referencia contra la que se compara el estado registrado.
 storage_desired_hash() {
     yq -o=json ".\"${1}\"" "$VBOXDISK_FILE" | sha256sum | awk '{ print $1 }'
 }
@@ -20,6 +36,7 @@ storage_fingerprint() {
     printf '%s\n%s\n%s\n' "$disk_part" "$disk" "$cfg_part" | sha256sum | awk '{ print $1 }'
 }
 
+# storage_disk_attached <vm> <disco>: 0 si showvminfo ya menciona el fichero.
 storage_disk_attached() {
     local vm="$1" disk="$2"
     VBoxManage showvminfo "$vm" --machinereadable 2>/dev/null |
@@ -152,7 +169,9 @@ GUEST_TABLE_LINES=""
 
 storage_parse_guest_output() {
     local out="$1" line
-    GUEST_EXIT=""
+# Resultado del script invitado en pares clave=valor (ver emit_state y
+# las claves que consume storage_verify_guest y apply_vm).
+GUEST_EXIT=""
     GUEST_DEVICE=""
     GUEST_TABLE=""
     GUEST_FSTYPE=""

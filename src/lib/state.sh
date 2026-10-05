@@ -1,9 +1,24 @@
 #!/usr/bin/env bash
+# Copyright 2026 spalax-dev
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
 # shellcheck disable=SC2034  # variables compartidas entre la
 # entrada y las demas bibliotecas de src/lib.
 # state.sh: state.lock (una entrada por vm) y bitacoras por ejecucion de apply.
 # Rutas segun las variables XDG; state.lock no se instala ni se elimina.
 
+# Rutas XDG por defecto; VBOXDISK_STATE_DIR las sobreescribe (usado en pruebas).
 state_dir() {
     printf '%s' "${VBOXDISK_STATE_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/vboxdisk}"
 }
@@ -16,6 +31,7 @@ state_log_dir() {
     printf '%s/state' "$(state_dir)"
 }
 
+# state_init_dirs: crea el directorio de estado y el de bitacoras.
 state_init_dirs() {
     mkdir -p "$(state_dir)" "$(state_log_dir)"
 }
@@ -73,6 +89,7 @@ state_table_b64() {
     printf '%s' "$b64" | base64 -d
 }
 
+# state_encode_table: tabla en base64 sin saltos, para una sola clave del lock.
 state_encode_table() {
     printf '%s' "$1" | base64 -w0
 }
