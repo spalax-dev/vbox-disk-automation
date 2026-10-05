@@ -50,7 +50,9 @@ guardar_adjuntos() {
     printf '%s\n' "$@" >"${VBOXDISK_MOCK_STATE}"
 }
 
-# argumento <bandera> <valor por defecto>: valor de una bandera del doble.
+# argumento <bandera> <valor por defecto> <argumentos...>: valor de una
+# bandera del doble, admitida tanto como "--bandera valor" como
+# "--bandera=valor". Sin la bandera devuelve el valor por defecto.
 argumento() {
     local flag="$1" prev=""
     shift
@@ -59,9 +61,13 @@ argumento() {
             printf '%s' "$arg"
             return 0
         fi
+        if [[ "$arg" == "$flag="* ]]; then
+            printf '%s' "${arg#"$flag="}"
+            return 0
+        fi
         prev="$arg"
     done
-    printf '%s' "$2"
+    printf '%s' "$1"
 }
 
 case "${1:-}" in
@@ -138,8 +144,27 @@ case "${1:-}" in
         done
         case "$sub" in
             mktemp) printf 'Directory name: /tmp/vboxdisk.MOCK0001\n' ;;
+            copyto)
+                # VBoxManage 7.2 exige la barra final en --target-directory:
+                # sin ella toma el destino como fichero y falla contra un
+                # directorio existente con ese nombre.
+                target="$(argumento --target-directory "" "$@")"
+                if [[ "$target" != */ ]]; then
+                    printf 'VBoxManage: error: File copy failed\n' >&2
+                    printf 'VBoxManage: error: Destination "%s" on the guest already exists and is a directory\n' "${target%/}" >&2
+                    exit 1
+                fi
+                ;;
             run)
                 if ((probe)); then
+                    # VBOXDISK_MOCK_PROBE_EXIT reproduce un disco no
+                    # identificable: el script emite su diagnostico y la
+                    # centinela con el codigo de salida.
+                    if [[ -n "${VBOXDISK_MOCK_PROBE_EXIT:-}" && "${VBOXDISK_MOCK_PROBE_EXIT}" != "0" ]]; then
+                        printf 'guest_ensure: no se identifico ningun disco de 4096 MB libre de montajes y sin etiqueta\n'
+                        printf 'VBOXDISK_EXIT=%s\n' "$VBOXDISK_MOCK_PROBE_EXIT"
+                        exit "$VBOXDISK_MOCK_PROBE_EXIT"
+                    fi
                     # Salida del script invitado en modo --probe.
                     printf '%s\n' \
                         'DEVICE=/dev/sdb' \

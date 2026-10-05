@@ -208,6 +208,20 @@ setup() {
     [[ "$output" == *"sdb"* ]]
     [[ "$output" == *"datos-vm1"* ]]
     ! grep -q "startvm" "$BATS_TEST_TMPDIR/vbox.log"
+    grep -q -- '--target-directory=[^ ]*/ ' "$BATS_TEST_TMPDIR/vbox.log"
+    grep -q -- '/bin/rm -rf /tmp/vboxdisk.MOCK0001' "$BATS_TEST_TMPDIR/vbox.log"
+}
+
+@test "ld en vivo informa los discos ausentes sin reportar fallo de comunicacion" {
+    export VBOXDISK_MOCK_VMSTATE=running
+    export VBOXDISK_MOCK_PROBE_EXIT=3
+    run "$ENTRY" ld VM1 -f "$FIX/valid.yml"
+    unset VBOXDISK_MOCK_VMSTATE VBOXDISK_MOCK_PROBE_EXIT
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"no se identifico ningun disco"* ]]
+    [[ "$output" == *"ejecute 'vboxdisk apply'"* ]]
+    [[ "$output" != *"no se pudo consultar"* ]]
+    [[ "$output" != *"consulta fallida"* ]]
 }
 
 @test "ld de una maquina no declarada termina con 1" {

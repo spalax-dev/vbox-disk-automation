@@ -58,9 +58,13 @@ cmd_apply() {
 
 # guest_session_open <vm>: prepara la sesion con el invitado: credenciales,
 # directorio temporal y copia unica del script invitado para todas las
-# corridas de la maquina.
+# corridas de la maquina. Deja ademas la vm en VBOXDISK_CURRENT_VM, que es
+# de donde vbox_guest_cleanup_all toma el destino de la limpieza si la
+# corrida termina sin cerrar la sesion.
 guest_session_open() {
     local vm="$1" user pass_raw passfile guest_dir i
+    # shellcheck disable=SC2034  # la lee vbox_guest_cleanup_all en vbox.sh.
+    VBOXDISK_CURRENT_VM="$vm"
     user="$(cfg_get "$vm" vm_user)"
     pass_raw="$(cfg_get "$vm" vm_pass)"
     if [[ -n "$pass_raw" ]]; then
@@ -180,7 +184,11 @@ guest_run() {
         return "$VBOXDISK_E_STORAGE"
     fi
     if [[ "$GUEST_EXIT" != "0" ]]; then
-        log_warn "$vm: el script invitado termino con codigo $GUEST_EXIT"
+        # En modo silencioso quien invoca informa disco a disco, de modo que
+        # la advertencia general solo se emite cuando la salida no esta retenida.
+        if [[ -z "${VBOXDISK_GUEST_QUIET:-}" ]]; then
+            log_warn "$vm: el script invitado termino con codigo $GUEST_EXIT"
+        fi
         return "$GUEST_EXIT"
     fi
     return 0
@@ -189,8 +197,6 @@ guest_run() {
 # apply_vm <vm>: las cinco etapas de la Subseccion del algoritmo.
 apply_vm() {
     local vm="$1"
-    # shellcheck disable=SC2034  # la lee vbox_guest_cleanup_all en vbox.sh.
-    VBOXDISK_CURRENT_VM="$vm"
     local desired stored fp stored_fp power rc=0 ip ready_t=0
     local disk file size fstate att uuid drift=0
     local -a declared=() orphans=() todo_active=() todo_release=() todo_delete=()

@@ -201,9 +201,16 @@ vbox_guest_mktemp_dir() {
     printf '%s' "$path"
 }
 
-# vbox_guest_copy_to <vm> <dir> <fichero>: copia al invitado en silencio.
+# vbox_guest_copy_to <vm> <dir> <fichero>: copia al invitado en silencio. El
+# destino lleva barra final: sin ella, VBoxManage 7.2 toma --target-directory
+# como la ruta del fichero de destino y falla contra un directorio existente
+# con el mismo nombre.
 vbox_guest_copy_to() {
     local vm="$1" dir="$2" file="$3"
+    case "$dir" in
+        */) ;;
+        *) dir="$dir/" ;;
+    esac
     vbox_gc "$vm" copyto --quiet --target-directory="$dir" "$file"
 }
 

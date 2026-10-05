@@ -156,7 +156,7 @@ cmd_ld() {
 # apagada, se explica que el registro se genera con apply.
 ld_live() {
     local vm="$1" pstate word disk rc size fstype label mount
-    local total=0 ok=0
+    local total=0 ok=0 avisos=0
     vbox_require
     pstate="$(vbox_power_state "$vm" || true)"
     if [[ "$pstate" != "running" ]]; then
@@ -190,7 +190,15 @@ ld_live() {
         guest_run "$vm" "${GUEST_ARGS[@]}" || rc=$?
         say ""
         if ((rc != 0)); then
-            say "disco $disk: no identificable en el invitado (codigo $rc)"
+            # GUEST_EXIT lleno significa que el script corrio y no encontro
+            # el disco: es una condicion del invitado, no un fallo de
+            # comunicacion, y se informa con el mensaje del propio script.
+            if [[ -n "$GUEST_EXIT" ]]; then
+                say "disco $disk: ${GUEST_NOTE:-no identificable en el invitado}"
+                avisos=$((avisos + 1))
+            else
+                say "disco $disk: consulta fallida en el invitado (codigo $rc)"
+            fi
             continue
         fi
         ok=$((ok + 1))
@@ -204,6 +212,10 @@ ld_live() {
     unset VBOXDISK_GUEST_QUIET
     guest_session_close "$vm"
     if ((total > 0 && ok == 0)); then
+        if ((avisos == total)); then
+            say "ningun disco declarado esta presente en el invitado; ejecute 'vboxdisk apply' para crearlos y registrarlos"
+            return 0
+        fi
         die "$VBOXDISK_E_COMM" "$vm: no se pudo consultar ningun disco en la vm"
     fi
     return 0

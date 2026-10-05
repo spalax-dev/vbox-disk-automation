@@ -433,6 +433,7 @@ storage_parse_guest_output() {
     GUEST_MOUNTPOINT=""
     GUEST_FSTAB=""
     GUEST_TABLE_LINES=""
+    GUEST_NOTE=""
     while IFS= read -r line || [[ -n "$line" ]]; do
         case "$line" in
             VBOXDISK_EXIT=*) GUEST_EXIT="${line#VBOXDISK_EXIT=}" ;;
@@ -443,6 +444,7 @@ storage_parse_guest_output() {
             MOUNTED=*) GUEST_MOUNTED="${line#MOUNTED=}" ;;
             MOUNTPOINT=*) GUEST_MOUNTPOINT="${line#MOUNTPOINT=}" ;;
             FSTAB=*) GUEST_FSTAB="${line#FSTAB=}" ;;
+            guest_ensure:*) GUEST_NOTE="${line#guest_ensure: }" ;;
             TABLE_LINE=*)
                 if [[ -n "$GUEST_TABLE_LINES" ]]; then
                     GUEST_TABLE_LINES+=$'\n'

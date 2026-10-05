@@ -64,6 +64,15 @@ setup() {
     [[ "$output" == *"confirmacion omitida por -y"* ]]
 }
 
+@test "guest_session_open deja la vm en VBOXDISK_CURRENT_VM para la limpieza" {
+    source "$REPO/src/lib/apply.sh"
+    GUEST_SCRIPT="$REPO/src/lib/guest_ensure.sh"
+    guest_session_open VM1
+    [ "$VBOXDISK_CURRENT_VM" = "VM1" ]
+    guest_session_close VM1
+    cleanup_tmps
+}
+
 @test "storage_require_space rechaza un disco sin caber en el directorio" {
     run storage_require_space "$BATS_TEST_TMPDIR/disco.vdi" 999999999
     [ "$status" -eq 1 ]
