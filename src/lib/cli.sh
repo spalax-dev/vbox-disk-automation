@@ -35,7 +35,8 @@ Uso: vboxdisk <orden> [opciones]
 Ordenes:
   apply            Converge todas las vm de ./vdisk.yml (unico caso que modifica)
   status           Lista las vm con su sincronizacion, sus discos y su direccion IP
-  ld <nombre>      Muestra la tabla de particiones registrada de cada disco de una vm
+  ld <nombre>      Tabla de particiones de los discos: la registrada o, sin
+                   registro, la de la vm encendida (nunca la enciende)
 
 Opciones:
   -f, --file FILE  Archivo declarativo (por defecto ./vdisk.yml)
@@ -128,6 +129,15 @@ cli_parse() {
 
     # Validaciones globales posteriores al analisis.
     if [[ -z "$CMD" ]]; then
+        # Banderas que solo pertenecen a apply: se senala la orden que falta
+        # antes de imprimir la ayuda, para no dejar la duda con el uso completo.
+        if ((DRY_RUN == 1)); then
+            log_error "falta la orden; quizas quiso decir: vboxdisk apply --dry-run"
+        elif ((VBOXDISK_ASSUME_YES == 1)); then
+            log_error "falta la orden; quizas quiso decir: vboxdisk apply -y"
+        else
+            log_error "falta la orden; las ordenes validas son apply, status y ld"
+        fi
         usage >&2
         exit "$VBOXDISK_E_CONFIG"
     fi

@@ -188,7 +188,7 @@ storage_ensure_medium() {
     state="$(vbox_power_state "$vm" || true)"
     if [[ "$state" == "running" || "$state" == "starting" ]]; then
         was_running=1
-        if ! confirm "$vm esta encendida y necesita un ciclo de encendido para adjuntar el disco $disk. Continuar?"; then
+        if ! confirm "$vm esta encendida; adjuntar $disk exige un ciclo de encendido, detener la maquina y volver a encenderla. Continuar?"; then
             log_warn "$vm: adjuncion del disco cancelada"
             return "$VBOXDISK_E_CANCEL"
         fi

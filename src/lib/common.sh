@@ -34,6 +34,8 @@ VBOXDISK_STAGE_N=0
 VBOXDISK_STAGE_T0=0
 VBOXDISK_STAGE_NAME=""
 VBOXDISK_STAGE_TOTAL=5
+VBOXDISK_STAGE_OPEN=0
+VBOXDISK_STAGE_PAINTED=0
 
 # now_s: segundos desde la epoca, base de todos los cronometros.
 now_s() { date +%s; }
@@ -44,8 +46,38 @@ have_cmd() { command -v "$1" >/dev/null 2>&1; }
 # is_tty: 0 si stderr es un terminal (ahi cabe la barra de progreso).
 is_tty() { [[ -t 2 ]]; }
 
+# bar_clear: borra la linea de la barra cuando esta pintada, para que un
+# registro o una pregunta no se peguen al avance de la etapa.
+bar_clear() {
+    if ((VBOXDISK_STAGE_PAINTED == 1)); then
+        printf '\r\033[K' >&2
+        VBOXDISK_STAGE_PAINTED=0
+    fi
+}
+
+# bar_paint: vuelve a pintar la barra si hay etapa en curso y stderr es tty.
+bar_paint() {
+    local filled width i bar=""
+    ((VBOXDISK_STAGE_OPEN == 1)) || return 0
+    is_tty || return 0
+    filled=$((VBOXDISK_STAGE_N - 1))
+    width=20
+    for ((i = 0; i < width; i++)); do
+        if ((i < filled)); then
+            bar+="="
+        elif ((i == filled)); then
+            bar+=">"
+        else
+            bar+=" "
+        fi
+    done
+    printf '\r[%d/%d] [%s] %s' "$VBOXDISK_STAGE_N" "$VBOXDISK_STAGE_TOTAL" "$bar" "$VBOXDISK_STAGE_NAME" >&2
+    VBOXDISK_STAGE_PAINTED=1
+}
+
 # log <nivel> <mensaje>: sello de tiempo y nivel a stderr y, si hay bitacora,
-# la misma linea al fichero de la corrida.
+# la misma linea al fichero de la corrida. La barra se borra antes de escribir
+# y se repinta despues, de modo que ningun mensaje queda a medio renglon.
 log() {
     local level="$1"
     shift
@@ -54,7 +86,9 @@ log() {
     if [[ -n "${VBOXDISK_LOG_FILE:-}" ]]; then
         printf '%s\n' "$line" >>"$VBOXDISK_LOG_FILE"
     fi
+    bar_clear
     printf '%s\n' "$line" >&2
+    bar_paint
 }
 
 # Atajos de registro por nivel.
@@ -73,21 +107,48 @@ die() {
     exit "$code"
 }
 
-# confirm <pregunta>: confirmacion de los caminos peligrosos. -y la omite y
-# sin terminal se cancela, porque no hay a quien preguntar.
+# read_answer <prompt>: imprime el prompt en stderr y devuelve la respuesta
+# por stdout. Lee de stdin cuando es terminal y, si la entrada esta redirigida,
+# de la terminal de control mientras stderr tambien lo sea (el caso de una
+# corrida lanzada desde una terminal con la entrada tomada por otro proceso).
+# Devuelve 1 cuando no hay terminal donde preguntar y 2 cuando la lectura se
+# interrumpe. Se invoca siempre entre $( ), de modo que el cambio de stdin no
+# escapa al llamador.
+read_answer() {
+    local prompt="$1" answer
+    if [[ -t 0 ]]; then
+        printf '%s ' "$prompt" >&2
+        IFS= read -r answer || return 2
+        printf '%s' "$answer"
+        return 0
+    fi
+    is_tty || return 1
+    if ! { exec 0</dev/tty; } 2>/dev/null; then
+        return 1
+    fi
+    printf '%s ' "$prompt" >&2
+    IFS= read -r answer || return 2
+    printf '%s' "$answer"
+}
+
+# confirm <pregunta>: confirmacion de los caminos peligrosos. -y la omite y,
+# sin terminal donde preguntar, se cancela porque no hay a quien formularla.
 confirm() {
-    local prompt="$1"
+    local prompt="$1" answer rc=0
     if [[ "${VBOXDISK_ASSUME_YES:-0}" == "1" ]]; then
         log_info "confirmacion omitida por -y: $prompt"
         return 0
     fi
-    if [[ ! -t 0 ]]; then
-        log_error "se requiere confirmacion y la entrada no es un terminal: $prompt (use -y)"
+    answer="$(read_answer "$prompt [s/N]")" || rc=$?
+    if ((rc == 1)); then
+        log_error "no hay terminal donde preguntar: $prompt"
+        log_info "responda en linea reejecutando la orden desde una terminal"
         return "$VBOXDISK_E_CANCEL"
     fi
-    local answer
-    printf '%s [s/N] ' "$prompt" >&2
-    IFS= read -r answer || return "$VBOXDISK_E_CANCEL"
+    if ((rc == 2)); then
+        log_warn "lectura de la respuesta interrumpida"
+        return "$VBOXDISK_E_CANCEL"
+    fi
     case "${answer,,}" in
         s | si | sí | y | yes) return 0 ;;
         *)
@@ -123,26 +184,41 @@ size_to_mb() {
 # eliminar; sin terminal no hay a quien preguntar y la corrida se cancela. La
 # letra elegida queda en CHOICE (e, i o s).
 confirm_choice() {
-    local prompt="$1" answer
+    local prompt="$1" answer rc=0
     CHOICE=""
     if [[ "${VBOXDISK_ASSUME_YES:-0}" == "1" ]]; then
         log_info "confirmacion omitida por -y: $prompt -> eliminar"
         CHOICE="e"
         return 0
     fi
-    if [[ ! -t 0 ]]; then
-        log_error "se requiere confirmacion y la entrada no es un terminal: $prompt (use -y)"
+    answer="$(read_answer "$prompt [e]liminar/[i]nactivar/[s]altar:")" || rc=$?
+    if ((rc == 1)); then
+        log_error "no hay terminal donde preguntar: $prompt"
+        log_info "responda en linea reejecutando la orden desde una terminal"
+        return "$VBOXDISK_E_CANCEL"
+    fi
+    if ((rc == 2)); then
+        log_warn "lectura de la respuesta interrumpida"
         return "$VBOXDISK_E_CANCEL"
     fi
     while :; do
-        printf '%s [e]liminar/[i]nactivar/[s]altar: ' "$prompt" >&2
-        IFS= read -r answer || return "$VBOXDISK_E_CANCEL"
         case "${answer,,}" in
             e | eliminar | d) CHOICE="e"; return 0 ;;
             i | inactivar) CHOICE="i"; return 0 ;;
             s | saltar | "") CHOICE="s"; return 0 ;;
         esac
         log_warn "respuesta no reconocida: $answer"
+        rc=0
+        answer="$(read_answer "$prompt [e]liminar/[i]nactivar/[s]altar:")" || rc=$?
+        if ((rc == 1)); then
+            log_error "no hay terminal donde preguntar: $prompt"
+            log_info "responda en linea reejecutando la orden desde una terminal"
+            return "$VBOXDISK_E_CANCEL"
+        fi
+        if ((rc == 2)); then
+            log_warn "lectura de la respuesta interrumpida"
+            return "$VBOXDISK_E_CANCEL"
+        fi
     done
 }
 
@@ -163,31 +239,24 @@ stage_begin() {
     VBOXDISK_STAGE_N="$1"
     VBOXDISK_STAGE_NAME="$2"
     VBOXDISK_STAGE_T0="$(now_s)"
-    if is_tty; then
-        local filled=$((VBOXDISK_STAGE_N - 1))
-        local width=20 i bar=""
-        for ((i = 0; i < width; i++)); do
-            if ((i < filled)); then
-                bar+="="
-            elif ((i == filled)); then
-                bar+=">"
-            else
-                bar+=" "
-            fi
-        done
-        printf '\r[%d/%d] [%s] %s' "$VBOXDISK_STAGE_N" "$VBOXDISK_STAGE_TOTAL" "$bar" "$VBOXDISK_STAGE_NAME" >&2
-    fi
+    VBOXDISK_STAGE_OPEN=1
+    VBOXDISK_STAGE_PAINTED=0
+    bar_paint
 }
 
 # stage_end: cierra la etapa, informa su duracion y la registra en la bitacora.
+# Si la barra sigue pintada se cierra en su renglon; si un registro o una
+# pregunta la borraron, se imprime la linea plana de las salidas sin terminal.
 stage_end() {
     local dur=$(($(now_s) - VBOXDISK_STAGE_T0))
-    if is_tty; then
+    if ((VBOXDISK_STAGE_PAINTED == 1)); then
         printf ' listo (%ds)\n' "$dur" >&2
     else
         printf '[%d/%d] %s ... listo (%ds)\n' \
             "$VBOXDISK_STAGE_N" "$VBOXDISK_STAGE_TOTAL" "$VBOXDISK_STAGE_NAME" "$dur" >&2
     fi
+    VBOXDISK_STAGE_OPEN=0
+    VBOXDISK_STAGE_PAINTED=0
     log_info "etapa $VBOXDISK_STAGE_N/$VBOXDISK_STAGE_TOTAL: $VBOXDISK_STAGE_NAME completada en ${dur}s"
 }
 

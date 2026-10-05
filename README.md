@@ -11,7 +11,7 @@ no hace nada.
 ```bash
 vboxdisk apply          # converge todas las vm del archivo
 vboxdisk status         # qué hay en cada vm y en sus discos
-vboxdisk ld VM1         # tabla de particiones registrada de VM1
+vboxdisk ld VM1         # tabla de particiones de VM1 (registrada o en vivo)
 ```
 
 ## Características
@@ -25,8 +25,11 @@ vboxdisk ld VM1         # tabla de particiones registrada de VM1
   entradas en `fstab`.
 - **No destructivo sin confirmar**: `--dry-run` muestra el plan sin tocar nada;
   el retiro de discos registrados pregunta antes (o elige con `-y`).
-- **Sin interacción**: nada pide datos por la terminal; las contraseñas viajan
-  en ficheros temporales que se destruyen al salir, en el host y en el invitado.
+- **Interacción acotada**: solo los caminos peligrosos preguntan, y la respuesta
+  se escribe en la terminal, incluso si la entrada estándar está redirigida; sin
+  terminal no hay a quien preguntar y la corrida se detiene con código 4. Las
+  contraseñas nunca se piden por la terminal: viajan en ficheros temporales que
+  se destruyen al salir, en el host y en el invitado.
 - **Códigos de salida distintos** por tipo de fallo, para usar en scripts.
 - **Pruebas con doble de VirtualBox**: 76 pruebas BATS corren sin hipervisor.
 
@@ -119,7 +122,8 @@ vboxdisk <orden> [opciones]
 
   apply            converge todas las vm de ./vdisk.yml (única orden que modifica)
   status           lista las vm con su sincronización, sus discos y su IP
-  ld <nombre>      tabla de particiones registrada de cada disco de una vm
+  ld <nombre>      tabla de particiones de los discos: la registrada o, sin
+                   registro, la de la vm encendida (nunca la enciende)
 
   -f, --file FILE  archivo declarativo (por defecto ./vdisk.yml)
   --dry-run        muestra el plan de cambios sin modificar nada (apply)

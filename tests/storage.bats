@@ -45,7 +45,23 @@ setup() {
     # suite se lanza desde una terminal interactiva.
     run confirm_choice "disco registrado y ausente del archivo" </dev/null
     [ "$status" -eq 4 ]
-    [[ "$output" == *"no es un terminal"* ]]
+    [[ "$output" == *"no hay terminal donde preguntar"* ]]
+    [[ "$output" != *"use -y"* ]]
+}
+
+@test "confirm sin terminal cancela la corrida con 4" {
+    run confirm "continuar con la operacion" </dev/null
+    [ "$status" -eq 4 ]
+    [[ "$output" == *"no hay terminal donde preguntar"* ]]
+    [[ "$output" == *"continuar con la operacion"* ]]
+    [[ "$output" != *"use -y"* ]]
+}
+
+@test "confirm con -y se omite sin preguntar" {
+    export VBOXDISK_ASSUME_YES=1
+    run confirm "continuar con la operacion" </dev/null
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"confirmacion omitida por -y"* ]]
 }
 
 @test "storage_require_space rechaza un disco sin caber en el directorio" {

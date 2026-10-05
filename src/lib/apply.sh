@@ -164,7 +164,9 @@ guest_run() {
         if [[ -n "${VBOXDISK_LOG_FILE:-}" ]]; then
             printf '%s\n' "$line" >>"$VBOXDISK_LOG_FILE"
         fi
-        printf '%s\n' "$line" >&2
+        if [[ -z "${VBOXDISK_GUEST_QUIET:-}" ]]; then
+            printf '%s\n' "$line" >&2
+        fi
     done <<<"$out"
 
     storage_parse_guest_output "$out"

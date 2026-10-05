@@ -32,6 +32,20 @@ setup() {
     [[ "$output" == *"Uso: vboxdisk"* ]]
 }
 
+@test "dry-run sin orden senala la orden que falta y termina con 1" {
+    run "$ENTRY" --dry-run
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"quizas quiso decir: vboxdisk apply --dry-run"* ]]
+    [[ "$output" == *"Uso: vboxdisk"* ]]
+}
+
+@test "-y sin orden senala la orden que falta y termina con 1" {
+    run "$ENTRY" -y
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"quizas quiso decir: vboxdisk apply -y"* ]]
+    [[ "$output" == *"Uso: vboxdisk"* ]]
+}
+
 @test "--help muestra el uso y termina con 0" {
     run "$ENTRY" --help
     [ "$status" -eq 0 ]
@@ -175,10 +189,25 @@ setup() {
     [[ "$output" == *"sdb"* ]]
 }
 
-@test "ld de una maquina sin registro termina con 1" {
+@test "ld sin registro con la vm apagada indica apply y termina con 1" {
     run "$ENTRY" ld VM1 -f "$FIX/valid.yml"
     [ "$status" -eq 1 ]
-    [[ "$output" == *"ningun registro"* ]]
+    [[ "$output" == *"la vm esta apagada"* ]]
+    [[ "$output" == *"vboxdisk apply"* ]]
+}
+
+@test "ld sin registro consulta la tabla de la vm encendida" {
+    export VBOXDISK_MOCK_VMSTATE=running
+    export VBOXDISK_MOCK_LOG="$BATS_TEST_TMPDIR/vbox.log"
+    run "$ENTRY" ld VM1 -f "$FIX/valid.yml"
+    unset VBOXDISK_MOCK_VMSTATE VBOXDISK_MOCK_LOG
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"sin corrida registrada"* ]]
+    [[ "$output" == *"disco disk1"* ]]
+    [[ "$output" == *"disco disk2"* ]]
+    [[ "$output" == *"sdb"* ]]
+    [[ "$output" == *"datos-vm1"* ]]
+    ! grep -q "startvm" "$BATS_TEST_TMPDIR/vbox.log"
 }
 
 @test "ld de una maquina no declarada termina con 1" {

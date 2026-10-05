@@ -15,8 +15,10 @@
 #
 # queries.sh: ordenes de solo lectura status y ld. Ninguna de las dos
 # enciende ni modifica una vm: consultan state.lock, el hipervisor y el
-# almacenamiento, y presentan el resultado. Se carga desde el punto de
-# entrada src/vboxdisk.
+# almacenamiento, y presentan el resultado. Cuando no hay registro previo y
+# la vm esta encendida, ld abre ademas una sesion de Guest Control de sola
+# lectura para mostrar la tabla real del invitado. Se carga desde el punto
+# de entrada src/vboxdisk.
 
 # vm_sync_status <vm>: estado de sincronizacion de la vm contra el
 # archivo declarativo, segun la huella registrada en state.lock.
@@ -111,7 +113,8 @@ cmd_status() {
 }
 
 # cmd_ld <nombre>: ultima corrida registrada y tabla de particiones de cada
-# disco con registro en state.lock.
+# disco con registro en state.lock. Sin registro, consulta la tabla real a
+# la vm si esta encendida y, si no lo esta, explica como se genera.
 cmd_ld() {
     local name="$1" run disk st table size label mount fstype
     local found=0
@@ -121,7 +124,8 @@ cmd_ld() {
     fi
     run="$(state_get "$name" last_run || true)"
     if [[ -z "$run" ]]; then
-        die_cfg "no hay ningun registro en state.lock para $name"
+        ld_live "$name"
+        return 0
     fi
     say "registro de $name: $run"
     while IFS= read -r disk; do
@@ -144,4 +148,63 @@ cmd_ld() {
     if ((found == 0)); then
         say "(sin discos registrados)"
     fi
+}
+
+# ld_live <vm>: sin registro previo, lee la tabla real de los discos
+# declarados abriendo una sesion de Guest Control contra la vm encendida.
+# La consulta es de sola lectura y jamas enciende la maquina: si esta
+# apagada, se explica que el registro se genera con apply.
+ld_live() {
+    local vm="$1" pstate word disk rc size fstype label mount
+    local total=0 ok=0
+    vbox_require
+    pstate="$(vbox_power_state "$vm" || true)"
+    if [[ "$pstate" != "running" ]]; then
+        case "$pstate" in
+            poweroff) word="apagada" ;;
+            saved) word="guardada" ;;
+            *) word="${pstate:-en estado desconocido}" ;;
+        esac
+        die_cfg "no hay corrida registrada para $vm y la vm esta $word; ejecute 'vboxdisk apply' para generar el registro"
+    fi
+    say "registro de $vm: sin corrida registrada; consulta en vivo $(date '+%Y-%m-%d %H:%M:%S')"
+    if ! guest_session_open "$vm"; then
+        die "$VBOXDISK_E_COMM" "$vm: no se pudo abrir sesion con el invitado para la consulta"
+    fi
+    # La salida cruda del invitado se retiene en stderr: lo que interesa
+    # aqui es la tabla ya formateada, que se muestra por stdout.
+    # shellcheck disable=SC2034  # la lee guest_run en apply.sh.
+    VBOXDISK_GUEST_QUIET=1
+    while IFS= read -r disk; do
+        [[ -n "$disk" ]] || continue
+        if [[ "$(cfg_disk_state "$vm" "$disk")" == "inactive" ]]; then
+            continue
+        fi
+        size="$(cfg_disk_size_mb "$vm" "$disk" || true)"
+        fstype="$(cfg_disk_get "$vm" "$disk" fs_type)"
+        label="$(cfg_disk_get "$vm" "$disk" label)"
+        mount="$(cfg_disk_get "$vm" "$disk" mount_point)"
+        total=$((total + 1))
+        guest_disk_args "$vm" "$disk" probe declarado
+        rc=0
+        guest_run "$vm" "${GUEST_ARGS[@]}" || rc=$?
+        say ""
+        if ((rc != 0)); then
+            say "disco $disk: no identificable en el invitado (codigo $rc)"
+            continue
+        fi
+        ok=$((ok + 1))
+        say "disco $disk (declarado, ${size} MB, $fstype, etiqueta $label, montado en $mount):"
+        if [[ -n "$GUEST_TABLE_LINES" ]]; then
+            printf '%s\n' "$GUEST_TABLE_LINES"
+        else
+            say "(sin tabla de particiones en el invitado)"
+        fi
+    done < <(cfg_disk_keys "$vm" "$VBOXDISK_FILE")
+    unset VBOXDISK_GUEST_QUIET
+    guest_session_close "$vm"
+    if ((total > 0 && ok == 0)); then
+        die "$VBOXDISK_E_COMM" "$vm: no se pudo consultar ningun disco en la vm"
+    fi
+    return 0
 }
