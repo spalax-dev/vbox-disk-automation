@@ -88,19 +88,25 @@ finish() {
     exit "$rc"
 }
 
-# Validacion de los argumentos obligatorios antes de cualquier accion.
-if [[ -z "$SIZE_MB" || -z "$MOUNT" || -z "$FSTYPE" ]]; then
-    usage >&2
-    finish 1
-fi
-if [[ "$FSTYPE" != "ext4" && "$FSTYPE" != "xfs" ]]; then
-    echo "fs_type invalido: $FSTYPE (se espera ext4 o xfs)" >&2
-    finish 1
-fi
-if [[ "$MOUNT" != /* ]]; then
-    echo "mount_point invalido: $MOUNT" >&2
-    finish 1
-fi
+# validate_args: validacion de los argumentos obligatorios antes de
+# cualquier accion. Cada comprobacion reporta su propio motivo de rechazo
+# y termina con la centinela; ninguna toca el sistema de archivos.
+validate_args() {
+    if [[ -z "$SIZE_MB" || -z "$MOUNT" || -z "$FSTYPE" ]]; then
+        usage >&2
+        finish 1
+    fi
+    if [[ "$FSTYPE" != "ext4" && "$FSTYPE" != "xfs" ]]; then
+        echo "fs_type invalido: $FSTYPE (se espera ext4 o xfs)" >&2
+        finish 1
+    fi
+    if [[ "$MOUNT" != /* ]]; then
+        echo "mount_point invalido: $MOUNT" >&2
+        finish 1
+    fi
+    return 0
+}
+validate_args
 
 # Elevacion unica: sudo lee la contraseña del fichero copiado al invitado.
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"

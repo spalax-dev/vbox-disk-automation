@@ -156,7 +156,9 @@ storage_plan_vm() {
     printf '%s: %s (estado actual: %s)\n' "$vm" "$plan" "$power"
 }
 
-# storage_parse_guest_output <texto>: extrae los pares clave=valor y la tabla.
+# Campos GUEST_*: estado del invitado que deja storage_parse_guest_output
+# (par clave=valor de emit_state); los consumen storage_verify_guest y
+# apply_vm.
 GUEST_EXIT=""
 GUEST_DEVICE=""
 GUEST_TABLE=""
@@ -167,11 +169,10 @@ GUEST_MOUNTPOINT=""
 GUEST_FSTAB=""
 GUEST_TABLE_LINES=""
 
+# storage_parse_guest_output <texto>: extrae los pares clave=valor y la tabla.
 storage_parse_guest_output() {
     local out="$1" line
-# Resultado del script invitado en pares clave=valor (ver emit_state y
-# las claves que consume storage_verify_guest y apply_vm).
-GUEST_EXIT=""
+    GUEST_EXIT=""
     GUEST_DEVICE=""
     GUEST_TABLE=""
     GUEST_FSTYPE=""
@@ -220,30 +221,68 @@ storage_drift() {
     return "$drift"
 }
 
-# storage_verify_guest <vm>: comprobacion final de la convergencia.
+# storage_require_* <vm> [...]: cada comprobacion final de la convergencia.
+# Devuelven 1 y registran el motivo cuando el invitado no coincide con lo
+# declarado; storage_verify_guest traduce cualquier fallo al codigo 3.
+
+# storage_require_exit <vm>: el script invitado termino con exito.
+storage_require_exit() {
+    if [[ "$GUEST_EXIT" != "0" ]]; then
+        log_error "$1: el script invitado termino con codigo ${GUEST_EXIT:-desconocido}"
+        return 1
+    fi
+    return 0
+}
+
+# storage_require_mounted <vm> <montaje>: el punto de montaje quedo montado.
+storage_require_mounted() {
+    if [[ "$GUEST_MOUNTED" != "yes" ]]; then
+        log_error "$1: el punto de montaje $2 no quedo montado"
+        return 1
+    fi
+    return 0
+}
+
+# storage_require_fstab <vm> <montaje>: el montaje quedo declarado en fstab.
+storage_require_fstab() {
+    if [[ "$GUEST_FSTAB" != "yes" ]]; then
+        log_error "$1: $2 no quedo declarado en /etc/fstab"
+        return 1
+    fi
+    return 0
+}
+
+# storage_require_fstype <vm> <esperado>: el sistema de archivos instalado
+# es el declarado.
+storage_require_fstype() {
+    if [[ "$GUEST_FSTYPE" != "$2" ]]; then
+        log_error "$1: sistema de archivos '$GUEST_FSTYPE' distinto del declarado '$2'"
+        return 1
+    fi
+    return 0
+}
+
+# storage_require_mountpoint <vm> <esperado>: el volumen quedo montado en la
+# ruta declarada.
+storage_require_mountpoint() {
+    if [[ "$GUEST_MOUNTPOINT" != "$2" ]]; then
+        log_error "$1: montado en '$GUEST_MOUNTPOINT' y no en '$2'"
+        return 1
+    fi
+    return 0
+}
+
+# storage_verify_guest <vm>: orquesta la comprobacion final de la
+# convergencia; en cuanto alguna propiedad esperada no se cumple, devuelve
+# el codigo de almacenamiento y detiene la corrida de la vm.
 storage_verify_guest() {
     local vm="$1" fs mount
     fs="$(cfg_get "$vm" fs_type)"
     mount="$(cfg_get "$vm" mount_point)"
-    if [[ "$GUEST_EXIT" != "0" ]]; then
-        log_error "$vm: el script invitado termino con codigo ${GUEST_EXIT:-desconocido}"
-        return "$VBOXDISK_E_STORAGE"
-    fi
-    if [[ "$GUEST_MOUNTED" != "yes" ]]; then
-        log_error "$vm: el punto de montaje $mount no quedo montado"
-        return "$VBOXDISK_E_STORAGE"
-    fi
-    if [[ "$GUEST_FSTAB" != "yes" ]]; then
-        log_error "$vm: $mount no quedo declarado en /etc/fstab"
-        return "$VBOXDISK_E_STORAGE"
-    fi
-    if [[ "$GUEST_FSTYPE" != "$fs" ]]; then
-        log_error "$vm: sistema de archivos '$GUEST_FSTYPE' distinto del declarado '$fs'"
-        return "$VBOXDISK_E_STORAGE"
-    fi
-    if [[ "$GUEST_MOUNTPOINT" != "$mount" ]]; then
-        log_error "$vm: montado en '$GUEST_MOUNTPOINT' y no en '$mount'"
-        return "$VBOXDISK_E_STORAGE"
-    fi
+    storage_require_exit "$vm" || return "$VBOXDISK_E_STORAGE"
+    storage_require_mounted "$vm" "$mount" || return "$VBOXDISK_E_STORAGE"
+    storage_require_fstab "$vm" "$mount" || return "$VBOXDISK_E_STORAGE"
+    storage_require_fstype "$vm" "$fs" || return "$VBOXDISK_E_STORAGE"
+    storage_require_mountpoint "$vm" "$mount" || return "$VBOXDISK_E_STORAGE"
     return 0
 }

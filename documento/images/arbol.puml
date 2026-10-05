@@ -9,9 +9,13 @@
 /vboxdisk/src/lib/state.sh
 /vboxdisk/src/lib/vbox.sh
 /vboxdisk/src/lib/storage.sh
+/vboxdisk/src/lib/cli.sh
+/vboxdisk/src/lib/apply.sh
+/vboxdisk/src/lib/queries.sh
 /vboxdisk/src/lib/guest_ensure.sh
 /vboxdisk/tests/
 /vboxdisk/Makefile
+/vboxdisk/LICENSE
 /vboxdisk/vdisk.yml.example
 /vboxdisk/vdisk.yml
 
