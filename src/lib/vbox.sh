@@ -258,3 +258,15 @@ vbox_guest_cleanup_all() {
     done
     VBOXDISK_GUEST_DIRS=()
 }
+
+# vbox_vm_dir <vm>: directorio de la maquina en el host (la clave CfgFile de
+# showvminfo); de ahi salen los discos por defecto cuando el archivo
+# declarativo no fija un fichero concreto.
+vbox_vm_dir() {
+    local cfg
+    cfg="$(vbox_info "$1" CfgFile)" || return 1
+    if [[ -z "$cfg" || "$cfg" != /* ]]; then
+        return 1
+    fi
+    dirname "$cfg"
+}

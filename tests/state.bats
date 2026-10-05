@@ -20,8 +20,11 @@ setup() {
     export PATH="$BATS_TEST_DIRNAME/bin:$PATH"
     export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
     export VBOXDISK_STATE_DIR="$BATS_TEST_TMPDIR/state"
+    export VBOXDISK_FILE="$BATS_TEST_DIRNAME/fixtures/valid.yml"
     source "$BATS_TEST_DIRNAME/../src/lib/common.sh"
+    source "$BATS_TEST_DIRNAME/../src/lib/config.sh"
     source "$BATS_TEST_DIRNAME/../src/lib/state.sh"
+    source "$BATS_TEST_DIRNAME/../src/lib/vbox.sh"
     source "$BATS_TEST_DIRNAME/../src/lib/storage.sh"
 }
 
@@ -44,8 +47,10 @@ setup() {
 
 @test "la tabla de particiones sobrevive al codigo base64" {
     local table=$'NAME    SIZE FSTYPE LABEL\ndev     4G   ext4   datos'
-    state_set_vm VM1 "table_b64=$(state_encode_table "$table")"
-    [ "$(state_table_b64 VM1)" = "$table" ]
+    state_set_vm VM1 "disks.disk1.table_b64=$(state_encode_table "$table")"
+    [ "$(state_table_b64 VM1 disk1)" = "$table" ]
+    run state_table_b64 VM1 disk9
+    [ "$status" -eq 1 ]
 }
 
 @test "state_open_log crea una bitacora por corrida" {
@@ -57,23 +62,74 @@ setup() {
     grep -q "vboxdisk 1.0.0" "$VBOXDISK_LOG_FILE"
 }
 
-@test "la huella fisica es estable ante consultas repetidas" {
+@test "la huella fisica de un disco es estable ante consultas repetidas" {
     local disk="$BATS_TEST_TMPDIR/disco.vdi" a b c
     printf 'contenido del disco' >"$disk"
-    a="$(storage_fingerprint VM1 "$disk")"
-    b="$(storage_fingerprint VM1 "$disk")"
+    a="$(storage_disk_fingerprint VM1 "$disk")"
+    b="$(storage_disk_fingerprint VM1 "$disk")"
     [ "$a" = "$b" ]
     [[ "$a" =~ ^[0-9a-f]{64}$ ]]
     printf ' y otros bytes' >>"$disk"
-    c="$(storage_fingerprint VM1 "$disk")"
+    c="$(storage_disk_fingerprint VM1 "$disk")"
     [ "$a" != "$c" ]
 }
 
+@test "la huella de la maquina cubre sus discos declarados" {
+    local a b
+    a="$(storage_fingerprint VM1)"
+    b="$(storage_fingerprint VM1)"
+    [ "$a" = "$b" ]
+    [[ "$a" =~ ^[0-9a-f]{64}$ ]]
+}
+
+@test "state_disk_keys lista los discos registrados en orden" {
+    state_set_vm VM1 "disks.disk1.state=active" "disks.disk2.state=active" "ip=192.168.1.16"
+    [ "$(state_disk_keys VM1 | tr '\n' ' ')" = "disk1 disk2 " ]
+    [ "$(state_get_disk VM1 disk2 state)" = "active" ]
+    run state_disk_keys VM9
+    [ "$status" -eq 0 ]
+}
+
+@test "state_update_vm fusiona sin borrar las claves existentes" {
+    state_update_vm VM1 "disks.disk1.state=active" "disks.disk1.uuid=aaa" "ip=192.168.1.16"
+    state_update_vm VM1 "disks.disk1.uuid=bbb"
+    [ "$(state_get VM1 ip)" = "192.168.1.16" ]
+    [ "$(state_get_disk VM1 disk1 state)" = "active" ]
+    [ "$(state_get_disk VM1 disk1 uuid)" = "bbb" ]
+    [ "$(grep -c '^\[VM1\]$' "$VBOXDISK_STATE_DIR/state.lock")" = "1" ]
+}
+
+@test "state_remove_disk retira el registro de un disco y conserva al resto" {
+    state_update_vm VM1 "disks.disk1.state=active" "disks.disk2.state=active" "ip=192.168.1.16"
+    state_remove_disk VM1 disk1
+    run state_get_disk VM1 disk1 state
+    [ "$status" -eq 1 ]
+    [ "$(state_get_disk VM1 disk2 state)" = "active" ]
+    [ "$(state_get VM1 ip)" = "192.168.1.16" ]
+}
+
 @test "el hash declarado distingue a las maquinas y es estable" {
-    VBOXDISK_FILE="$BATS_TEST_DIRNAME/fixtures/valid.yml"
     local hash1 hash2
     hash1="$(storage_desired_hash VM1)"
     hash2="$(storage_desired_hash VM2)"
     [ "$hash1" != "$hash2" ]
     [ "$(storage_desired_hash VM1)" = "$hash1" ]
+}
+
+@test "el hash de cada disco distingue a los discos de una maquina" {
+    local d1 d2
+    d1="$(storage_disk_desired_hash VM1 disk1)"
+    d2="$(storage_disk_desired_hash VM1 disk2)"
+    [ "$d1" != "$d2" ]
+    [ "$(storage_disk_desired_hash VM1 disk1)" = "$d1" ]
+}
+
+@test "el fichero del disco sale de la declaracion" {
+    [ "$(storage_disk_file VM1 disk1)" = "/no/existe/VM1-disk1.vdi" ]
+    [ "$(storage_disk_file VM1 disk2)" = "/no/existe/VM1-disk2.vdi" ]
+}
+
+@test "los discos registrados ausentes del archivo se declaran huerfanos" {
+    state_set_vm VM1 "disks.disk1.state=active" "disks.viejo.state=active" "disks.retirado.state=inactive"
+    [ "$(storage_orphan_disks VM1 | tr '\n' ' ')" = "viejo " ]
 }

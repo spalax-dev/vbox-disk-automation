@@ -13,28 +13,115 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Doble de VBoxManage para las pruebas: cubre list vms y showvminfo
-# --machinereadable, suficiente para la verificacion declarativa sin vm real.
-# Opcional: las pruebas pueden registrar cada invocacion del doble.
+# Doble de VBoxManage para las pruebas: cubre list vms, showvminfo
+# --machinereadable, createmedium, storageattach y closemedium, suficiente
+# para ensayar la verificacion declarativa sin una vm real. Las pruebas
+# registran la lista inicial de discos en VBOXDISK_MOCK_ATTACHED y, si
+# declaran VBOXDISK_MOCK_STATE, el doble conserva los adjuntos en ese
+# fichero de modo que una adjuncion o un desprendimiento se reflejen en la
+# siguiente consulta. Cada invocacion puede quedar ademas anotada en
+# VBOXDISK_MOCK_LOG.
 if [[ -n "${VBOXDISK_MOCK_LOG:-}" ]]; then
     printf '%s\n' "$*" >>"$VBOXDISK_MOCK_LOG"
 fi
+
+# discos_adjuntos: los medios de datos en el orden de sus puertos.
+discos_adjuntos() {
+    if [[ -n "${VBOXDISK_MOCK_STATE:-}" && -f "${VBOXDISK_MOCK_STATE}" ]]; then
+        cat "${VBOXDISK_MOCK_STATE}"
+        return 0
+    fi
+    local d
+    for d in ${VBOXDISK_MOCK_ATTACHED:-}; do
+        printf '%s\n' "$d"
+    done
+}
+
+# guardar_adjuntos <lineas...>: persiste la lista cuando hay estado.
+guardar_adjuntos() {
+    [[ -n "${VBOXDISK_MOCK_STATE:-}" ]] || return 0
+    if (($# == 0)); then
+        : >"${VBOXDISK_MOCK_STATE}"
+        return 0
+    fi
+    printf '%s\n' "$@" >"${VBOXDISK_MOCK_STATE}"
+}
+
+# argumento <bandera> <valor por defecto>: valor de una bandera del doble.
+argumento() {
+    local flag="$1" prev=""
+    shift
+    for arg in "$@"; do
+        if [[ "$prev" == "$flag" ]]; then
+            printf '%s' "$arg"
+            return 0
+        fi
+        prev="$arg"
+    done
+    printf '%s' "$2"
+}
+
 case "${1:-}" in
     # Relato de maquinas declaradas: VM1 y VM2 con UUIDs fijos.
     list)
         printf '%s\n' '"VM1" {aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}'
         printf '%s\n' '"VM2" {11111111-2222-3333-4444-555555555555}'
         ;;
-    # Configuracion legible por maquina: apagada, con un adaptador y un
-    # controlador SATA que ya contiene el disco del sistema.
+    # Configuracion legible por maquina: apagada, con dos controladores, un
+    # controlador SATA que ya contiene el disco del sistema en el puerto 0 y
+    # los discos de datos declarados en los puertos siguientes.
     showvminfo)
-        printf 'name="%s"\n' "${2:-}"
+        vm="${2:-}"
+        printf 'name="%s"\n' "$vm"
+        printf 'CfgFile="/home/jorge/.mvs/debian/%s/%s.vbox"\n' "$vm" "$vm"
         printf '%s\n' 'VMState="poweroff"'
         printf '%s\n' 'macaddress1="080027F2C586"'
         printf '%s\n' 'storagecontrollername0="IDE"'
         printf '%s\n' 'storagecontrollername1="SATA"'
         printf '%s\n' 'SATA-portcount="30"'
         printf '%s\n' 'SATA-0-0="/home/jorge/.mvs/debian/VM1/VM1-disk1.qcow"'
+        printf '%s\n' 'SATA-ImageUUID-0-0="11111111-2222-3333-4444-555555555555"'
+        port=1
+        while IFS= read -r medium; do
+            [[ -n "$medium" ]] || continue
+            printf 'SATA-%d-0="%s"\n' "$port" "$medium"
+            printf 'SATA-ImageUUID-%d-0="aaaaaaaa-0000-0000-0000-%012d"\n' "$port" "$port"
+            port=$((port + 1))
+        done < <(discos_adjuntos)
+        ;;
+    # createmedium crea el fichero vacio, como lo haria el hipervisor.
+    createmedium)
+        file="$(argumento --filename "" "${@:2}")"
+        if [[ -n "$file" ]]; then
+            mkdir -p "$(dirname "$file")"
+            : >"$file"
+        fi
+        ;;
+    # storageattach anade o retira un medio de la lista de adjuntos.
+    storageattach)
+        medium="$(argumento --medium "" "${@:3}")"
+        port="$(argumento --port "0" "${@:3}")"
+        items=()
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && items+=("$line")
+        done < <(discos_adjuntos)
+        if [[ -z "$medium" || "$medium" == "none" ]]; then
+            idx=$((port - 1))
+            if ((idx >= 0 && idx < ${#items[@]})); then
+                unset 'items[idx]'
+            fi
+        else
+            items+=("$medium")
+        fi
+        guardar_adjuntos "${items[@]}"
+        ;;
+    # closemedium retira el medio y, con --delete, borra el fichero.
+    closemedium)
+        # Invocado como: closemedium disk <fichero> [--delete]
+        medium="${3:-}"
+        if [[ -n "$medium" && -f "$medium" ]] && printf '%s\n' "${@:4}" | grep -q -- '--delete'; then
+            rm -f "$medium"
+        fi
         ;;
     *)
         exit 0

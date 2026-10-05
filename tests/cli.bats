@@ -86,8 +86,38 @@ setup() {
     [[ "$output" == *"primera aplicacion"* ]]
     [[ "$output" == *"VM1:"* ]]
     [[ "$output" == *"VM2:"* ]]
+    [[ "$output" == *"disk1: se creara y adjuntara el disco de 4096 MB"* ]]
+    [[ "$output" == *"disk2: se creara y adjuntara el disco de 1024 MB"* ]]
     [ ! -e "$XDG_DATA_HOME/vboxdisk" ]
     [ ! -e "$VBOXDISK_STATE_DIR" ]
+}
+
+@test "apply --dry-run senala el disco registrado y ausente del archivo" {
+    export VBOXDISK_FILE="$FIX/valid.yml"
+    source "$REPO/src/lib/common.sh"
+    source "$REPO/src/lib/config.sh"
+    source "$REPO/src/lib/state.sh"
+    source "$REPO/src/lib/vbox.sh"
+    source "$REPO/src/lib/storage.sh"
+    mkdir -p "$VBOXDISK_STATE_DIR"
+    printf '%s\n' \
+        '[VM1]' \
+        "desired_hash=$(storage_desired_hash VM1)" \
+        "fingerprint=$(storage_fingerprint VM1)" \
+        'disks.viejo.state=active' \
+        >"$VBOXDISK_STATE_DIR/state.lock"
+    run "$ENTRY" apply --dry-run -f "$FIX/valid.yml"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"viejo: registrado y ausente del archivo declarativo; requiere decision"* ]]
+    [[ "$output" == *"discos registrados pendientes de decision"* ]]
+}
+
+@test "el disco inactivo registrado no se declara huerfano" {
+    mkdir -p "$VBOXDISK_STATE_DIR"
+    printf '[VM1]\ndisks.viejo.state=inactive\n' >"$VBOXDISK_STATE_DIR/state.lock"
+    run "$ENTRY" apply --dry-run -f "$FIX/valid.yml"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"requiere decision"* ]]
 }
 
 @test "apply --dry-run con vm ausente en el hipervisor termina con 1" {
@@ -100,9 +130,21 @@ setup() {
     run "$ENTRY" status -f "$FIX/valid.yml"
     [ "$status" -eq 0 ]
     [[ "$output" == *"MAQUINA"* ]]
+    [[ "$output" == *"DISCOS"* ]]
     [[ "$output" == *"VM1"* ]]
     [[ "$output" == *"VM2"* ]]
     [[ "$output" == *"sin estado"* ]]
+    [[ "$output" == *"2 sin registrar"* ]]
+    [[ "$output" == *"1 sin registrar"* ]]
+}
+
+@test "status refleja los discos registrados en state.lock" {
+    mkdir -p "$VBOXDISK_STATE_DIR"
+    printf '[VM1]\nlast_run=2026-10-03 12:00:00\ndisks.disk1.state=active\ndisks.disk2.state=active\n' \
+        >"$VBOXDISK_STATE_DIR/state.lock"
+    run "$ENTRY" status -f "$FIX/valid.yml"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"2 activos"* ]]
 }
 
 @test "ld muestra el registro de state.lock" {
@@ -111,6 +153,26 @@ setup() {
     run "$ENTRY" ld VM1 -f "$FIX/valid.yml"
     [ "$status" -eq 0 ]
     [[ "$output" == *"registro de VM1: 2026-10-03 12:00:00"* ]]
+    [[ "$output" == *"sin discos registrados"* ]]
+}
+
+@test "ld muestra la tabla de particiones de cada disco" {
+    local table=$'NAME  SIZE FSTYPE LABEL\nsdb   4.0G ext4   datos-vm1'
+    mkdir -p "$VBOXDISK_STATE_DIR"
+    printf '%s\n' \
+        '[VM1]' \
+        'last_run=2026-10-03 12:00:00' \
+        'disks.disk1.state=active' \
+        'disks.disk1.size_mb=4096' \
+        'disks.disk1.label=datos-vm1' \
+        'disks.disk1.mount_point=/mnt/datos' \
+        'disks.disk1.fs_type=ext4' \
+        "disks.disk1.table_b64=$(printf '%s' "$table" | base64 -w0)" \
+        >"$VBOXDISK_STATE_DIR/state.lock"
+    run "$ENTRY" ld VM1 -f "$FIX/valid.yml"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"disco disk1 (active, 4096 MB, ext4, etiqueta datos-vm1, montado en /mnt/datos)"* ]]
+    [[ "$output" == *"sdb"* ]]
 }
 
 @test "ld de una maquina sin registro termina con 1" {

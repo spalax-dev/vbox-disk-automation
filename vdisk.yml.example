@@ -18,31 +18,46 @@
 # rellene un bloque por cada maquina virtual. La clave de primer nivel es el
 # nombre exacto de la vm tal como aparece en VBoxManage list vms.
 #
-# Claves obligatorias: vm_user, disk_file, disk_size_mb, mount_point, fs_type.
-# Credenciales (obligatoria una de las dos): vm_pass o vm_pass_file.
-# Claves opcionales: disk_device, fs_label.
+# Claves de la maquina: vm_user y disks son obligatorias; ademas admite
+# vm_pass y vm_pass_file, de las cuales se exige al menos una.
+# Claves de cada disco: label, size, fs_type y mount_point son obligatorias;
+# file y state son opcionales.
+#
+# size acepta megabytes sin sufijo o una cifra con sufijo m, g o t, y
+# state es active (por defecto) o inactive.
 #
 # Precedencia de valores: variables de entorno VBOXDISK_* > este archivo > defecto.
 
 VM1:
   vm_user: debian
   vm_pass: "cambia-esta-clave"
-  # Ruta en el host del disco virtual de datos; si no existe se crea (VDI).
-  disk_file: /home/jorge/.mvs/debian/VM1/VM1-datos.vdi
-  disk_size_mb: 4096
-  # disk_device: /dev/sdb   # opcional: fija el disco; sin esta clave se
-  #                          # detecta por su tamano declarado en el invitado
-  mount_point: /mnt/datos
-  fs_type: ext4
-  fs_label: datos-vm1       # opcional: etiqueta del sistema de archivos
+  # La maquina admite todos los discos de datos que declare bajo 'disks'.
+  disks:
+    disk1:
+      size: 4g                     # 4096 MB
+      fs_type: ext4
+      mount_point: /mnt/datos
+      label: datos-vm1
+      # file: ruta/opcional.vdi    # si se omite, el nombre sale del
+      #                             # directorio de la vm y de la clave
+      # state: active              # active crea y adjunta; inactive desmonta
+      #                             # y desprende el disco, sin borrarlo
+    disk2:
+      size: 1024                   # megabytes enteros, sin sufijo
+      fs_type: ext4
+      mount_point: /mnt/respaldo
+      label: respaldo-vm1
+      file: /home/jorge/.mvs/debian/VM1/VM1-respaldo.vdi
 
 VM2:
   vm_user: debian
   # Alternativa a vm_pass: fichero legible solo por el usuario, cuyo contenido
   # es unicamente la contrasena (sin terminador de linea).
   vm_pass_file: /home/jorge/.secrets/vm2.pass
-  disk_file: /home/jorge/.mvs/debian/VM2/VM2-datos.vdi
-  disk_size_mb: 8192
-  mount_point: /srv/datos
-  fs_type: xfs
-  fs_label: datos-vm2
+  disks:
+    disk1:
+      size: 3g
+      fs_type: xfs
+      mount_point: /srv/datos
+      label: datos-vm2
+      file: /home/jorge/.mvs/debian/VM2/VM2-datos.vdi

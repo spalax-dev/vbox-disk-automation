@@ -19,13 +19,14 @@ cloud "Red local\nmodo puente (bridged)" as LAN #E8F5E9
 node "VM1\nGNU/Linux" as VM1 #FFF8E1 {
   component "Interfaz en puente" as NIC1 #FFFFFF
   component "Guest Additions\nVBoxService" as GA1 #FFFFFF
-  database "Disco de datos de VM1\nmontaje declarado" as D1 #FFFFFF
+  database "Disco de datos 1 de VM1\n4 GiB · ext4 en /mnt/datos" as D1 #FFFFFF
+  database "Disco de datos 2 de VM1\n1 GiB · ext4 en /mnt/respaldo" as D1B #FFFFFF
 }
 
 node "VM2\nGNU/Linux" as VM2 #FFF8E1 {
   component "Interfaz en puente" as NIC2 #FFFFFF
   component "Guest Additions\nVBoxService" as GA2 #FFFFFF
-  database "Disco de datos de VM2\nmontaje declarado" as D2 #FFFFFF
+  database "Disco de datos de VM2\n3 GiB · xfs en /srv/datos" as D2 #FFFFFF
 }
 
 HNIC --> LAN : "medio físico"
@@ -36,6 +37,7 @@ SOL -[#1E88E5,bold]-> VBox : "1. VBoxManage startvm"
 VBox .[#1E88E5,bold].> GA1 : "3. guestcontrol run"
 VBox .[#1E88E5,bold].> GA2
 GA1 -[#43A047,bold]-> D1 : "4. lsblk · parted · mkfs\nmkdir · fstab · mount"
+GA1 -[#43A047,bold]-> D1B
 GA2 -[#43A047,bold]-> D2
 VM1 .[#43A047,dashed].> VBox : "5. verificación\n(findmnt · df -h)"
 

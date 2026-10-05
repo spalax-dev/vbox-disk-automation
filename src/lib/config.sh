@@ -15,15 +15,46 @@
 #
 # config.sh: lectura, validacion y precedencia de vdisk.yml con yq.
 # Precedencia: variables de entorno VBOXDISK_* > bloque en vdisk.yml > defecto.
+# El archivo declara una maquina por bloque y, dentro de cada una, la lista
+# de discos de datos bajo la clave 'disks'; el esquema plano anterior
+# (disk_file, disk_size_mb, disk_device, mount_point, fs_type, fs_label) se
+# rechaza con una indicacion explicita de migracion.
 
-# Claves admitidas y claves obligatorias de cada bloque de vdisk.yml.
-VBOXDISK_KEYS=(vm_user vm_pass vm_pass_file disk_file disk_size_mb disk_device mount_point fs_type fs_label)
-VBOXDISK_REQUIRED=(vm_user disk_file disk_size_mb mount_point fs_type)
+# Claves admitidas y obligatorias de cada bloque de vdisk.yml.
+VBOXDISK_KEYS=(vm_user vm_pass vm_pass_file disks)
+VBOXDISK_REQUIRED=(vm_user disks)
+# Claves admitidas y obligatorias de cada disco del bloque 'disks'.
+VBOXDISK_DISK_KEYS=(label size fs_type mount_point file state)
+VBOXDISK_DISK_REQUIRED=(label size fs_type mount_point)
+# Claves del esquema anterior, todavia presentes en archivos antiguos.
+VBOXDISK_LEGACY_KEYS=(disk_file disk_size_mb disk_device mount_point fs_type fs_label)
 
 # cfg_is_reserved <clave>: 0 si la clave pertenece al conjunto reservado.
 cfg_is_reserved() {
     local key="$1" k
     for k in "${VBOXDISK_KEYS[@]}"; do
+        if [[ "$key" == "$k" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# cfg_is_legacy <clave>: 0 si la clave pertenece al esquema anterior.
+cfg_is_legacy() {
+    local key="$1" k
+    for k in "${VBOXDISK_LEGACY_KEYS[@]}"; do
+        if [[ "$key" == "$k" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# cfg_is_disk_key <clave>: 0 si la clave pertenece al conjunto de un disco.
+cfg_is_disk_key() {
+    local key="$1" k
+    for k in "${VBOXDISK_DISK_KEYS[@]}"; do
         if [[ "$key" == "$k" ]]; then
             return 0
         fi
@@ -51,6 +82,40 @@ cfg_get() {
     printf '%s' "$val"
 }
 
+# cfg_disk_keys <vm> <fichero>: claves de los discos declarados por la vm.
+cfg_disk_keys() {
+    yq -r ".\"${1}\".disks // {} | keys | .[]" "$2" 2>/dev/null || true
+}
+
+# cfg_disk_get <vm> <disco> <clave> [fichero]: valor de una clave de un disco;
+# sin variable de entorno, porque la precedencia rige solo a nivel de maquina.
+# El cuarto argumento permite leer un fichero distinto del declarado, que es
+# lo que hace la validacion al examinar otro archivo.
+cfg_disk_get() {
+    local vm="$1" disk="$2" key="$3" file="${4:-$VBOXDISK_FILE}" val
+    val="$(yq -r ".\"${vm}\".disks.\"${disk}\".\"${key}\" // \"\"" "$file")"
+    if [[ "$val" == "null" ]]; then
+        val=""
+    fi
+    printf '%s' "$val"
+}
+
+# cfg_disk_size_mb <vm> <disco>: tamano del disco en megabytes; cadena vacia
+# si la declaracion no es un tamano legible.
+cfg_disk_size_mb() {
+    local raw mb
+    raw="$(cfg_disk_get "$1" "$2" size)"
+    mb="$(size_to_mb "$raw")" || return 1
+    printf '%s' "$mb"
+}
+
+# cfg_disk_state <vm> <disco>: estado deseado del disco (active por defecto).
+cfg_disk_state() {
+    local st
+    st="$(cfg_disk_get "$1" "$2" state)"
+    printf '%s' "${st:-active}"
+}
+
 # cfg_validate_file <fichero>: existencia, lectura y sintaxis YAML.
 # Ninguna de estas comprobaciones toca el hipervisor.
 cfg_validate_file() {
@@ -64,7 +129,7 @@ cfg_validate_file() {
         return 1
     fi
     # Se listan los nombres del fichero recibido, no del global VBOXDISK_FILE,
-    # de modo que validate sirve tambien para examinar otro archivo.
+    # de modo que validate sirva tambien para examinar otro archivo.
     local vms
     vms="$(yq -r '. | keys | .[]' "$file" 2>/dev/null || true)"
     if [[ -z "$vms" ]]; then
@@ -84,14 +149,16 @@ cfg_validate_name() {
     return 0
 }
 
-# cfg_validate_keys <vm> <fichero>: todas las claves del bloque son reservadas.
+# cfg_validate_keys <vm> <fichero>: todas las claves del bloque son reservadas
+# y no pertenecen al esquema anterior de discos planos.
 cfg_validate_keys() {
     local vm="$1" file="$2" key rc=0
     while IFS= read -r key; do
-        if [[ -z "$key" ]]; then
-            continue
-        fi
-        if ! cfg_is_reserved "$key"; then
+        [[ -n "$key" ]] || continue
+        if cfg_is_legacy "$key"; then
+            log_error "$vm: '$key' pertenece al esquema anterior; declare los discos bajo la clave 'disks' (vdisk.yml.example)"
+            rc=1
+        elif ! cfg_is_reserved "$key"; then
             log_error "$vm: clave no reservada '$key' (Tabla de variables reservadas)"
             rc=1
         fi
@@ -99,9 +166,10 @@ cfg_validate_keys() {
     return "$rc"
 }
 
-# cfg_validate_required <vm> <fichero>: las claves obligatorias estan presentes.
+# cfg_validate_required <vm> <fichero>: las claves obligatorias estan presentes
+# y 'disks' es un mapa con al menos un disco declarado.
 cfg_validate_required() {
-    local vm="$1" file="$2" key val rc=0
+    local vm="$1" file="$2" key val type rc=0
     for key in "${VBOXDISK_REQUIRED[@]}"; do
         val="$(yq -r ".\"${vm}\".\"${key}\" // \"\"" "$file")"
         if [[ -z "$val" || "$val" == "null" ]]; then
@@ -109,6 +177,22 @@ cfg_validate_required() {
             rc=1
         fi
     done
+    type="$(yq -r ".\"${vm}\".disks | type" "$file" 2>/dev/null || printf 'null')"
+    case "$type" in
+        "!!map")
+            if [[ -z "$(cfg_disk_keys "$vm" "$file")" ]]; then
+                log_error "$vm: 'disks' no declara ningun disco"
+                rc=1
+            fi
+            ;;
+        "!!null")
+            # Ya reportada arriba como clave obligatoria ausente.
+            ;;
+        *)
+            log_error "$vm: 'disks' debe ser un mapa de discos (no una lista ni un valor simple)"
+            rc=1
+            ;;
+    esac
     return "$rc"
 }
 
@@ -129,39 +213,95 @@ cfg_validate_credentials() {
     return "$rc"
 }
 
-# cfg_validate_values <vm> <fichero>: valores concretos de fs_type,
-# disk_size_mb, mount_point y disk_device.
-cfg_validate_values() {
-    local vm="$1" file="$2" fs size mount dev rc=0
-    fs="$(yq -r ".\"${vm}\".fs_type // \"\"" "$file")"
-    if [[ -n "$fs" && "$fs" != "null" && "$fs" != "ext4" && "$fs" != "xfs" ]]; then
-        log_error "$vm: 'fs_type' debe ser ext4 o xfs (valor: $fs)"
-        rc=1
-    fi
-    size="$(yq -r ".\"${vm}\".disk_size_mb // \"\"" "$file")"
-    if [[ -n "$size" && "$size" != "null" ]]; then
-        if [[ ! "$size" =~ ^[0-9]+$ ]] || ((size <= 0)); then
-            log_error "$vm: 'disk_size_mb' debe ser un entero positivo (valor: $size)"
+# cfg_validate_disks <vm> <fichero>: forma de cada disco declarado y
+# unicidad de etiqueta y de punto de montaje dentro de la maquina.
+cfg_validate_disks() {
+    local vm="$1" file="$2" disk dkey rc=0
+    local label size fs mount fstate path
+    local -A labels=() mounts=()
+    while IFS= read -r disk; do
+        [[ -n "$disk" ]] || continue
+        if [[ ! "$disk" =~ ^[A-Za-z0-9._-]+$ ]] || ((${#disk} > 32)); then
+            log_error "$vm: clave de disco invalida '$disk' (admitidos [A-Za-z0-9._-] y hasta 32 caracteres)"
+            rc=1
+            continue
+        fi
+        while IFS= read -r dkey; do
+            [[ -n "$dkey" ]] || continue
+            if ! cfg_is_disk_key "$dkey"; then
+                log_error "$vm/$disk: clave no reservada '$dkey' (Tabla de variables de disco)"
+                rc=1
+            fi
+        done < <(yq -r ".\"${vm}\".disks.\"${disk}\" | keys | .[]" "$file" 2>/dev/null || true)
+        label="$(cfg_disk_get "$vm" "$disk" label "$file")"
+        size="$(cfg_disk_get "$vm" "$disk" size "$file")"
+        fs="$(cfg_disk_get "$vm" "$disk" fs_type "$file")"
+        mount="$(cfg_disk_get "$vm" "$disk" mount_point "$file")"
+        fstate="$(cfg_disk_get "$vm" "$disk" state "$file")"
+        path="$(cfg_disk_get "$vm" "$disk" file "$file")"
+
+        local key missing=""
+        for key in "${VBOXDISK_DISK_REQUIRED[@]}"; do
+            if [[ -z "$(cfg_disk_get "$vm" "$disk" "$key" "$file")" ]]; then
+                missing="$key"
+                break
+            fi
+        done
+        if [[ -n "$missing" ]]; then
+            log_error "$vm/$disk: falta la clave obligatoria '$missing'"
+            rc=1
+            continue
+        fi
+        if [[ ! "$label" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            log_error "$vm/$disk: 'label' solo admite [A-Za-z0-9._-] (valor: $label)"
+            rc=1
+        elif [[ "$fs" == "xfs" && ${#label} -gt 12 ]]; then
+            log_error "$vm/$disk: 'label' no puede exceder 12 caracteres en xfs (valor: $label)"
+            rc=1
+        elif [[ "$fs" == "ext4" && ${#label} -gt 16 ]]; then
+            log_error "$vm/$disk: 'label' no puede exceder 16 caracteres en ext4 (valor: $label)"
             rc=1
         fi
-    fi
-    mount="$(yq -r ".\"${vm}\".mount_point // \"\"" "$file")"
-    if [[ -n "$mount" && "$mount" != "null" && "$mount" != /* ]]; then
-        log_error "$vm: 'mount_point' debe ser una ruta absoluta (valor: $mount)"
-        rc=1
-    fi
-    dev="$(yq -r ".\"${vm}\".disk_device // \"\"" "$file")"
-    if [[ -n "$dev" && "$dev" != "null" && ! "$dev" =~ ^/dev/[A-Za-z0-9]+$ ]]; then
-        log_error "$vm: 'disk_device' invalido (valor: $dev)"
-        rc=1
-    fi
+        if ! size_to_mb "$size" >/dev/null; then
+            log_error "$vm/$disk: 'size' debe ser un entero de megabytes o una cifra con sufijo m|g|t (valor: $size)"
+            rc=1
+        fi
+        if [[ "$fs" != "ext4" && "$fs" != "xfs" ]]; then
+            log_error "$vm/$disk: 'fs_type' debe ser ext4 o xfs (valor: $fs)"
+            rc=1
+        fi
+        if [[ "$mount" != /* || "$mount" == "/" ]]; then
+            log_error "$vm/$disk: 'mount_point' debe ser una ruta absoluta distinta de '/' (valor: $mount)"
+            rc=1
+        fi
+        if [[ -n "$path" && "$path" != /* ]]; then
+            log_error "$vm/$disk: 'file' debe ser una ruta absoluta (valor: $path)"
+            rc=1
+        fi
+        if [[ -n "$fstate" && "$fstate" != "active" && "$fstate" != "inactive" ]]; then
+            log_error "$vm/$disk: 'state' debe ser active o inactive (valor: $fstate)"
+            rc=1
+        fi
+        if [[ -n "${labels[$label]:-}" ]]; then
+            log_error "$vm/$disk: la etiqueta '$label' ya se usa en el disco '${labels[$label]}'"
+            rc=1
+        else
+            labels[$label]="$disk"
+        fi
+        if [[ "$fstate" != "inactive" && -n "${mounts[$mount]:-}" ]]; then
+            log_error "$vm/$disk: el montaje '$mount' ya se usa en el disco '${mounts[$mount]}'"
+            rc=1
+        elif [[ "$fstate" != "inactive" ]]; then
+            mounts[$mount]="$disk"
+        fi
+    done < <(cfg_disk_keys "$vm" "$file")
     return "$rc"
 }
 
 # cfg_validate <fichero>: validacion completa antes de tocar el hipervisor.
 # Ordena por etapas las comprobaciones: primero el fichero como tal y,
 # despues, cada vm contra su nombre, sus claves, sus obligatorias, su
-# credencial y sus valores concretos. Acumula todos los errores del fichero
+# credencial y sus discos. Acumula todos los errores del fichero
 # y devuelve 1 si alguno fallo, sin detenerse en el primero.
 cfg_validate() {
     local file="$1"
@@ -176,7 +316,7 @@ cfg_validate() {
         cfg_validate_keys "$vm" "$file" || errors=1
         cfg_validate_required "$vm" "$file" || errors=1
         cfg_validate_credentials "$vm" "$file" || errors=1
-        cfg_validate_values "$vm" "$file" || errors=1
+        cfg_validate_disks "$vm" "$file" || errors=1
     done
     if ((errors != 0)); then
         return 1

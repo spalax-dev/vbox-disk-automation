@@ -97,6 +97,67 @@ confirm() {
     esac
 }
 
+# size_to_mb <texto>: tamano declarado normalizado a megabytes. Admite el entero
+# solo (megabytes) o el sufijo m|mb|g|gb|t|tb, sin distincion de mayusculas;
+# una cifra cero o una forma desconocida no es un tamano valido.
+size_to_mb() {
+    local raw num unit
+    raw="${1,,}"
+    if [[ ! "$raw" =~ ^([0-9]+)(m|mb|g|gb|t|tb)?$ ]]; then
+        return 1
+    fi
+    num=$((10#${BASH_REMATCH[1]}))
+    unit="${BASH_REMATCH[2]}"
+    case "$unit" in
+        g | gb) num=$((num * 1024)) ;;
+        t | tb) num=$((num * 1024 * 1024)) ;;
+    esac
+    if ((num <= 0)); then
+        return 1
+    fi
+    printf '%s' "$num"
+}
+
+# confirm_choice <pregunta>: decision sobre un disco registrado que ya no figura
+# en el archivo declarativo: eliminarlo, dejarlo inactivo o saltarlo. -y elige
+# eliminar; sin terminal no hay a quien preguntar y la corrida se cancela. La
+# letra elegida queda en CHOICE (e, i o s).
+confirm_choice() {
+    local prompt="$1" answer
+    CHOICE=""
+    if [[ "${VBOXDISK_ASSUME_YES:-0}" == "1" ]]; then
+        log_info "confirmacion omitida por -y: $prompt -> eliminar"
+        CHOICE="e"
+        return 0
+    fi
+    if [[ ! -t 0 ]]; then
+        log_error "se requiere confirmacion y la entrada no es un terminal: $prompt (use -y)"
+        return "$VBOXDISK_E_CANCEL"
+    fi
+    while :; do
+        printf '%s [e]liminar/[i]nactivar/[s]altar: ' "$prompt" >&2
+        IFS= read -r answer || return "$VBOXDISK_E_CANCEL"
+        case "${answer,,}" in
+            e | eliminar | d) CHOICE="e"; return 0 ;;
+            i | inactivar) CHOICE="i"; return 0 ;;
+            s | saltar | "") CHOICE="s"; return 0 ;;
+        esac
+        log_warn "respuesta no reconocida: $answer"
+    done
+}
+
+# in_list <valor> [elementos...]: 0 si el valor figura en la lista.
+in_list() {
+    local want="$1" item
+    shift
+    for item in "$@"; do
+        if [[ "$item" == "$want" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # stage_begin <n> <nombre>: abre la etapa n y pinta la barra si stderr es tty.
 stage_begin() {
     VBOXDISK_STAGE_N="$1"

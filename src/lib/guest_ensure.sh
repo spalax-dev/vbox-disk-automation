@@ -14,13 +14,16 @@
 # limitations under the License.
 #
 # guest_ensure.sh: se copia al invitado en cada corrida y aplica las tres
-# guardas de almacenamiento (tabla, sistema de archivos y montaje).
-# Modos: --probe (solo lectura) y convergencia. Termina siempre con la centinela
-# VBOXDISK_EXIT=<n> en la salida estandar.
+# guardas de almacenamiento (tabla, sistema de archivos y montaje) sobre un
+# solo disco, el declarado por el host.
+# Modos: --probe (solo lectura), convergencia y --release (desmonta y retira
+# la entrada de /etc/fstab, sin modificar el disco). Termina siempre con la
+# centinela VBOXDISK_EXIT=<n> en la salida estandar.
 set -uo pipefail
 
 ORIG_ARGS=("$@")
 PROBE=0
+RELEASE=0
 DEVICE_OPT=""
 SIZE_MB=""
 MOUNT=""
@@ -30,8 +33,9 @@ PASSFILE=""
 
 usage() {
     cat <<'EOF'
-Uso: guest_ensure.sh [--probe] --size-mb N --mount /ruta --fstype ext4|xfs
-                     [--label ETIQUETA] [--device /dev/sdX] [--passfile archivo]
+Uso: guest_ensure.sh [--probe | --release] --size-mb N --mount /ruta
+                     --fstype ext4|xfs --label ETIQUETA
+                     [--device /dev/sdX] [--passfile archivo]
 EOF
 }
 
@@ -40,6 +44,9 @@ while (($#)); do
     case "$1" in
         --probe)
             PROBE=1
+            ;;
+        --release)
+            RELEASE=1
             ;;
         --size-mb)
             SIZE_MB="${2:-}"
@@ -92,7 +99,22 @@ finish() {
 # cualquier accion. Cada comprobacion reporta su propio motivo de rechazo
 # y termina con la centinela; ninguna toca el sistema de archivos.
 validate_args() {
-    if [[ -z "$SIZE_MB" || -z "$MOUNT" || -z "$FSTYPE" ]]; then
+    if ((PROBE == 1 && RELEASE == 1)); then
+        echo "--probe y --release son incompatibles" >&2
+        finish 1
+    fi
+    if [[ -z "$MOUNT" ]]; then
+        usage >&2
+        finish 1
+    fi
+    if [[ "$MOUNT" != /* || "$MOUNT" == "/" ]]; then
+        echo "mount_point invalido: $MOUNT" >&2
+        finish 1
+    fi
+    if ((RELEASE == 1)); then
+        return 0
+    fi
+    if [[ -z "$SIZE_MB" || -z "$FSTYPE" || -z "$LABEL" ]]; then
         usage >&2
         finish 1
     fi
@@ -100,8 +122,16 @@ validate_args() {
         echo "fs_type invalido: $FSTYPE (se espera ext4 o xfs)" >&2
         finish 1
     fi
-    if [[ "$MOUNT" != /* ]]; then
-        echo "mount_point invalido: $MOUNT" >&2
+    if [[ ! "$LABEL" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        echo "label invalido: $LABEL (solo se admiten [A-Za-z0-9._-])" >&2
+        finish 1
+    fi
+    if [[ "$FSTYPE" == "xfs" && ${#LABEL} -gt 12 ]]; then
+        echo "label invalido: $LABEL no puede exceder 12 caracteres en xfs" >&2
+        finish 1
+    fi
+    if [[ "$FSTYPE" == "ext4" && ${#LABEL} -gt 16 ]]; then
+        echo "label invalido: $LABEL no puede exceder 16 caracteres en ext4" >&2
         finish 1
     fi
     return 0
@@ -159,21 +189,77 @@ fail() {
     finish "${2:-3}"
 }
 
-# detect_device: el indicado con --device, o el disco libre cuyo tamano
-# coincide con el declarado (tolerancia de 1 MB).
-detect_device() {
-    local name size type want tol diff best=""
-    if [[ -n "$DEVICE_OPT" ]]; then
-        if [[ ! -b "$DEVICE_OPT" ]]; then
-            fail "dispositivo inexistente: $DEVICE_OPT" 1
-        fi
-        G_DEV="$DEVICE_OPT"
+# assert_not_system_disk <disco>: el destino nunca es el disco que contiene la
+# raiz; si lo es, la corrida se detiene sin tocar nada.
+assert_not_system_disk() {
+    local target="$1" root_src root_disk resolved
+    [[ -n "$target" && -b "$target" ]] || return 0
+    resolved="$(readlink -f "$target" 2>/dev/null || printf '%s' "$target")"
+    if lsblk -nrpo MOUNTPOINT "$target" 2>/dev/null | grep -qx '/'; then
+        fail "$target es el disco del sistema: la solucion se niega a modificarlo" 1
+    fi
+    root_src="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+    root_src="$(readlink -f "$root_src" 2>/dev/null || printf '%s' "$root_src")"
+    if [[ -z "$root_src" || ! -b "$root_src" ]]; then
         return 0
+    fi
+    if [[ "$root_src" == "$resolved" ]]; then
+        fail "$target es el disco del sistema: la solucion se niega a modificarlo" 1
+    fi
+    root_disk="$(lsblk -no PKNAME "$root_src" 2>/dev/null || true)"
+    if [[ -n "$root_disk" && "/dev/$root_disk" == "$resolved" ]]; then
+        fail "$target es el disco del sistema: la solucion se niega a modificarlo" 1
+    fi
+    return 0
+}
+
+# device_from_label <etiqueta>: disco que contiene el sistema de archivos con
+# esa etiqueta; la particion se eleva a su disco contenedor, porque las guardas
+# se aplican siempre sobre el disco completo.
+device_from_label() {
+    local dev parent
+    dev="$(blkid -L "$1" 2>/dev/null || true)"
+    if [[ -z "$dev" || ! -b "$dev" ]]; then
+        return 1
+    fi
+    parent="$(lsblk -no PKNAME "$dev" 2>/dev/null || true)"
+    if [[ -n "$parent" ]]; then
+        dev="/dev/$parent"
+    fi
+    printf '%s' "$dev"
+    return 0
+}
+
+# device_hint_ok <disco>: la pista del host solo vale si el dispositivo existe
+# y su tamano coincide con el declarado (tolerancia de 1 MB); en cualquier otro
+# caso la deteccion sigue por el tamano.
+device_hint_ok() {
+    local dev="$1" want tol diff actual
+    if [[ ! -b "$dev" ]]; then
+        return 1
     fi
     want=$((SIZE_MB * 1024 * 1024))
     tol=$((1024 * 1024))
+    actual="$(blockdev --getsize64 "$dev" 2>/dev/null || echo 0)"
+    diff=$((actual - want))
+    if ((diff < 0)); then
+        diff=$((-diff))
+    fi
+    ((diff <= tol))
+}
+
+# detect_by_size: el disco cuyo tamano coincide con el declarado, siempre que
+# no tenga etiqueta (esa se identifica por su etiqueta), ni montajes, ni la
+# raiz; dos candidatos iguales no se desempatan a ciegas.
+detect_by_size() {
+    local name size type tol diff best="" found=0
+    local want=$((SIZE_MB * 1024 * 1024))
+    tol=$((1024 * 1024))
     while read -r name size type; do
         if [[ "$type" != "disk" ]]; then
+            continue
+        fi
+        if lsblk -nrpo LABEL "/dev/$name" 2>/dev/null | grep -q '[^[:space:]]'; then
             continue
         fi
         if lsblk -nrpo MOUNTPOINT "/dev/$name" 2>/dev/null | grep -q '[^[:space:]]'; then
@@ -183,21 +269,44 @@ detect_device() {
         if ((diff < 0)); then
             diff=$((-diff))
         fi
-        if ((diff <= tol)); then
-            best="/dev/$name"
-            break
+        if ((diff > tol)); then
+            continue
         fi
+        if ((found == 1)); then
+            echo "guest_ensure: hay varios discos de ${SIZE_MB} MB sin etiqueta; identifique el disco con la etiqueta declarada o con --device" >&2
+            return 1
+        fi
+        best="/dev/$name"
+        found=1
     done < <(lsblk -b -dn -o NAME,SIZE,TYPE)
-    if [[ -z "$best" ]]; then
-        fail "no se identifico ningun disco de ${SIZE_MB} MB libre de montajes" 3
+    if ((found == 0)); then
+        echo "guest_ensure: no se identifico ningun disco de ${SIZE_MB} MB libre de montajes y sin etiqueta" >&2
+        return 1
     fi
     G_DEV="$best"
+    return 0
+}
+
+# detect_device: la etiqueta declarada, y si el disco aun no la tiene, la
+# pista del host y despues el tamano. Devuelve 1 sin tocar el sistema; quien
+# decide si el fallo detiene la corrida es el flujo principal.
+detect_device() {
+    local dev
+    if [[ -n "$LABEL" ]] && dev="$(device_from_label "$LABEL")"; then
+        G_DEV="$dev"
+        return 0
+    fi
+    if [[ -n "$DEVICE_OPT" ]] && device_hint_ok "$DEVICE_OPT"; then
+        G_DEV="$DEVICE_OPT"
+        return 0
+    fi
+    detect_by_size
 }
 
 # collect: observa el dispositivo actual sin modificarlo y rellena las
 # variables G_* (tabla, particion, fs, UUID, montaje y fstab).
 collect() {
-    local pttype
+    local pttype lp parent
     G_PART=""
     G_TABLE="none"
     G_FSTYPE=""
@@ -214,6 +323,19 @@ collect() {
         G_TABLE="$pttype"
     fi
     G_PART="$(lsblk -nrpo NAME,TYPE "$G_DEV" 2>/dev/null | awk '$2 == "part" { print $1; exit }')"
+    # La particion que ya lleva la etiqueta declarada es la propia del disco,
+    # aunque no sea la primera de la lista.
+    if [[ -n "$LABEL" ]]; then
+        lp="$(blkid -L "$LABEL" 2>/dev/null || true)"
+        if [[ -n "$lp" && -b "$lp" ]]; then
+            parent="$(lsblk -no PKNAME "$lp" 2>/dev/null || true)"
+            if [[ -n "$parent" && "/dev/$parent" == "$(readlink -f "$G_DEV")" ]]; then
+                G_PART="$lp"
+            elif [[ -z "$parent" && "$lp" == "$G_DEV" ]]; then
+                G_PART="$lp"
+            fi
+        fi
+    fi
     if [[ -n "$G_PART" && -b "$G_PART" ]]; then
         G_FSTYPE="$(blkid -o value -s TYPE "$G_PART" 2>/dev/null || true)"
         G_UUID="$(blkid -o value -s UUID "$G_PART" 2>/dev/null || true)"
@@ -279,6 +401,42 @@ ensure_fstab() {
     return 0
 }
 
+# remove_fstab_entries: retira de /etc/fstab las lineas que declaran el punto
+# de montaje (o la etiqueta, si se conoce); no cambia los permisos del
+# fichero porque el contenido se reescribe sobre el mismo inode.
+remove_fstab_entries() {
+    local tmp
+    if [[ ! -r /etc/fstab ]]; then
+        return 0
+    fi
+    tmp="$(mktemp)"
+    if awk -v m="$MOUNT" -v l="$LABEL" '
+        /^[[:space:]]*#/ || NF == 0 { print; next }
+        (l != "" && $1 == "LABEL=" l) { hit = 1; next }
+        $2 == m { hit = 1; next }
+        { print }
+        END { if (hit) exit 0; exit 1 }
+    ' /etc/fstab >"$tmp"; then
+        cat "$tmp" >/etc/fstab
+        echo "guest_ensure: entrada retirada de /etc/fstab para $MOUNT" >&2
+    fi
+    rm -f "$tmp"
+    return 0
+}
+
+# release_mount: el retiro total de un disco inactivo o eliminado: desmonta
+# el punto declarado y borra su entrada persistente, sin modificar el disco.
+release_mount() {
+    if findmnt --mountpoint "$MOUNT" >/dev/null 2>&1; then
+        echo "guest_ensure: desmontando $MOUNT" >&2
+        umount "$MOUNT" || fail "no se pudo desmontar $MOUNT"
+    else
+        echo "guest_ensure: $MOUNT no esta montado" >&2
+    fi
+    remove_fstab_entries
+    return 0
+}
+
 # converge: aplicacion de las tres guardas en orden, cada una tras comprobar
 # que su condicion aun no se cumple.
 converge() {
@@ -341,9 +499,28 @@ converge() {
     return 0
 }
 
-# Flujo principal: detectar el disco y, segun el modo, solo sondear o
-# converger; en ambos casos se emite siempre el estado y la centinela.
-detect_device
+# Flujo principal: el modo --release solo retira el montaje y su entrada; en
+# los demas se identifica el disco, se comprueba que no es el del sistema y,
+# segun el modo, solo se sondea o se converge. Siempre se emite el estado y
+# la centinela.
+if ((RELEASE == 1)); then
+    if ! detect_device; then
+        echo "guest_ensure: no se identifico el disco; se retira solo el montaje declarado" >&2
+        G_DEV=""
+    fi
+    if [[ -n "$G_DEV" ]]; then
+        assert_not_system_disk "$G_DEV"
+    fi
+    release_mount
+    collect
+    emit_state
+    finish 0
+fi
+
+if ! detect_device; then
+    finish 3
+fi
+assert_not_system_disk "$G_DEV"
 
 if ((PROBE == 1)); then
     collect

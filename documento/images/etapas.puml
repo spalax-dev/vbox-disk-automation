@@ -8,17 +8,19 @@ skinparam ranksep 30
 skinparam roundCorner 12
 
 :Etapa 1: verificar el estado declarado en
-state.lock, la huella del disco y que la
+state.lock, la huella de cada disco y que la
 VM permanezca apagada;
 if (¿ya coincide con lo declarado?) then (sí)
   :Reportar "sin cambios" y fin de esta VM;
   stop
 else (no)
 endif
-:Etapa 1: crear o ajustar el medio del disco
-en el host si hace falta;
+:Etapa 1: resolver los discos registrados que
+ya no figuran en vdisk.yml y crear en el host
+cada disco activo que falte;
 note right
-  si falla: código 3
+  sin espacio libre o fallo: código 3
+  sin terminal y sin -y: código 4
 end note
 :Etapa 2: encender la VM y esperar a
 VBoxService (máximo 120 s);
@@ -30,13 +32,13 @@ Guest Additions o la tabla ARP;
 note right
   si falla: código 2
 end note
-:Etapa 4: sondear y convergir el almacenamiento
-en el sistema invitado;
+:Etapa 4: sondear y convergir en el sistema
+invitado cada disco (una corrida por disco);
 note right
   si falla: códigos 1 a 4
 end note
-:Etapa 5: verificar con findmnt y df -h
-y registrar el resultado en state.lock;
+:Etapa 5: verificar cada disco con findmnt y
+df -h y registrar el resultado en state.lock;
 note right
   si falla: código 3
 end note

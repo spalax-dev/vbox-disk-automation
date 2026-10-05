@@ -34,13 +34,14 @@ Uso: vboxdisk <orden> [opciones]
 
 Ordenes:
   apply            Converge todas las vm de ./vdisk.yml (unico caso que modifica)
-  status           Lista las vm con su estado de sincronizacion y direccion IP
-  ld <nombre>      Muestra la tabla de particiones registrada para una vm
+  status           Lista las vm con su sincronizacion, sus discos y su direccion IP
+  ld <nombre>      Muestra la tabla de particiones registrada de cada disco de una vm
 
 Opciones:
   -f, --file FILE  Archivo declarativo (por defecto ./vdisk.yml)
   --dry-run        Muestra el plan de cambios sin modificar nada (apply)
-  -y, --yes        Omite las confirmaciones de los caminos peligrosos
+  -y, --yes        Omite las confirmaciones; ante un disco registrado y ausente
+                   del archivo elige eliminarlo
   -h, --help       Muestra esta ayuda y termina
   --version        Muestra la version instalada y termina
 

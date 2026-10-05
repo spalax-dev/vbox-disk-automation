@@ -7,8 +7,9 @@ skinparam nodesep 24
 skinparam ranksep 30
 skinparam roundCorner 12
 
-:Recibir los parámetros de la VM y leer el estado
-real con lsblk, blkid y findmnt;
+:Recibir los parámetros del disco, identificarlo
+en el invitado por su etiqueta o por su tamaño y
+leer el estado real con lsblk, blkid y findmnt;
 if (¿el disco declarado carece de tabla de particiones?) then (sí)
   :Crear una tabla GPT y una partición con parted;
 else (no)
@@ -24,6 +25,10 @@ else (no)
 endif
 :Devolver en pares clave=valor el dispositivo, la tabla,
 el fstype, el UUID, el montaje y fstab;
+note right
+  el disco del sistema nunca se identifica
+  como disco de datos ni se reformatea
+end note
 stop
 
 @enduml

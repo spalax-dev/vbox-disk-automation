@@ -33,6 +33,53 @@ vm_sync_status() {
     fi
 }
 
+# vm_status_disks <vm>: resumen por disco para la columna DISCOS de status:
+# cuantos estan activos, cuantos inactivos, cuantos declarados sin registrar
+# y cuantos registrados quedaron pendientes de decision.
+vm_status_disks() {
+    local vm="$1" disk st
+    local active=0 inactive=0 fresh=0 pending=0 parts=""
+    while IFS= read -r disk; do
+        [[ -n "$disk" ]] || continue
+        st="$(state_get_disk "$vm" "$disk" state || true)"
+        case "$st" in
+            active) active=$((active + 1)) ;;
+            inactive) inactive=$((inactive + 1)) ;;
+            *) fresh=$((fresh + 1)) ;;
+        esac
+    done < <(cfg_disk_keys "$vm" "$VBOXDISK_FILE")
+    while IFS= read -r disk; do
+        [[ -n "$disk" ]] && pending=$((pending + 1))
+    done < <(storage_orphan_disks "$vm")
+
+    if ((active > 0)); then
+        parts+="$active $(plural "$active" activo), "
+    fi
+    if ((inactive > 0)); then
+        parts+="$inactive $(plural "$inactive" inactivo), "
+    fi
+    if ((fresh > 0)); then
+        parts+="$fresh sin registrar, "
+    fi
+    if ((pending > 0)); then
+        parts+="$pending por resolver, "
+    fi
+    if [[ -z "$parts" ]]; then
+        printf '(sin discos)'
+        return 0
+    fi
+    printf '%s' "${parts%, }"
+}
+
+# plural <n> <palabra>: la palabra en plural cuando n no es uno.
+plural() {
+    if (($1 == 1)); then
+        printf '%s' "$2"
+    else
+        printf '%ss' "$2"
+    fi
+}
+
 # vm_status_ip <vm>: direccion IP para la tabla de status. Si la vm esta
 # encendida se consulta en tiempo de ejecucion; si no, se muestra la
 # registrada en state.lock y se advierte que la maquina esta apagada.
@@ -50,21 +97,24 @@ vm_status_ip() {
     vbox_detect_ip "$vm" 0 || printf '(no disponible)'
 }
 
-# cmd_status: tabla de sincronizacion e IP por vm, de solo lectura.
+# cmd_status: tabla de sincronizacion, discos e IP por vm, de solo lectura.
 cmd_status() {
     validate_config 1
-    printf '%-12s %-16s %s\n' "MAQUINA" "ESTADO" "DIRECCION_IP"
-    local vm estado ip
+    printf '%-12s %-16s %-30s %s\n' "MAQUINA" "ESTADO" "DISCOS" "DIRECCION_IP"
+    local vm estado discos ip
     while IFS= read -r vm; do
         estado="$(vm_sync_status "$vm")"
+        discos="$(vm_status_disks "$vm")"
         ip="$(vm_status_ip "$vm")"
-        printf '%-12s %-16s %s\n' "$vm" "$estado" "$ip"
+        printf '%-12s %-16s %-30s %s\n' "$vm" "$estado" "$discos" "$ip"
     done < <(cfg_vms)
 }
 
-# cmd_ld <nombre>: ultima corrida registrada y tabla de particiones de una vm.
+# cmd_ld <nombre>: ultima corrida registrada y tabla de particiones de cada
+# disco con registro en state.lock.
 cmd_ld() {
-    local name="$1" run table
+    local name="$1" run disk st table size label mount fstype
+    local found=0
     validate_config 0
     if ! cfg_vms | grep -Fxq "$name"; then
         die_cfg "la vm '$name' no esta declarada en $VBOXDISK_FILE"
@@ -74,10 +124,24 @@ cmd_ld() {
         die_cfg "no hay ningun registro en state.lock para $name"
     fi
     say "registro de $name: $run"
-    table="$(state_table_b64 "$name" || true)"
-    if [[ -z "$table" ]]; then
-        say "(sin tabla de particiones registrada)"
-    else
-        printf '%s\n' "$table"
+    while IFS= read -r disk; do
+        [[ -n "$disk" ]] || continue
+        found=1
+        st="$(state_get_disk "$name" "$disk" state || true)"
+        size="$(state_get_disk "$name" "$disk" size_mb || true)"
+        label="$(state_get_disk "$name" "$disk" label || true)"
+        mount="$(state_get_disk "$name" "$disk" mount_point || true)"
+        fstype="$(state_get_disk "$name" "$disk" fs_type || true)"
+        say ""
+        say "disco $disk (${st:-desconocido}, ${size} MB, $fstype, etiqueta $label, montado en $mount):"
+        table="$(state_table_b64 "$name" "$disk" || true)"
+        if [[ -z "$table" ]]; then
+            say "(sin tabla de particiones registrada)"
+        else
+            printf '%s\n' "$table"
+        fi
+    done < <(state_disk_keys "$name")
+    if ((found == 0)); then
+        say "(sin discos registrados)"
     fi
 }

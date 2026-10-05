@@ -55,6 +55,29 @@ state_get() {
     ' "$lock"
 }
 
+# state_get_disk <vm> <disco> <clave>: clave anidada disks.<disco>.<clave>.
+state_get_disk() {
+    state_get "$1" "disks.$2.$3"
+}
+
+# state_disk_keys <vm>: discos registrados de la maquina, en orden de registro.
+state_disk_keys() {
+    local vm="$1" lock
+    lock="$(state_lock_file)"
+    if [[ ! -f "$lock" ]]; then
+        return 0
+    fi
+    awk -v vm="$vm" -v p="disks." '
+        $0 == "[" vm "]" { in_vm = 1; next }
+        /^\[/ { in_vm = 0 }
+        in_vm && index($0, p) == 1 {
+            key = substr($0, length(p) + 1)
+            sub(/\..*$/, "", key)
+            if (key != "" && !seen[key]++) print key
+        }
+    ' "$lock"
+}
+
 # state_set_vm <vm> <clave=valor>...  Reescribe o anade la entrada completa.
 state_set_vm() {
     local vm="$1"
@@ -79,10 +102,104 @@ state_set_vm() {
     mv "$tmp" "$lock"
 }
 
-# state_table_b64 <vm>: tabla de particiones registrada, ya decodificada.
+# state_update_vm <vm> <clave=valor>...  Fusiona con la entrada existente: las
+# claves recibidas se actualizan o se anaden al final y el resto de la seccion
+# se conserva tal cual, de modo que los discos no afectados por la corrida no
+# pierden su registro.
+state_update_vm() {
+    local vm="$1"
+    shift
+    local lock tmp kv line
+    local -A prev=()
+    local -a order=()
+    lock="$(state_lock_file)"
+    mkdir -p "$(dirname "$lock")"
+    if [[ -f "$lock" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            case "$line" in
+                "[$vm]")
+                    in_vm=1
+                    continue
+                    ;;
+                \[*)
+                    in_vm=0
+                    ;;
+            esac
+            [[ "${in_vm:-0}" == "1" && "$line" == *"="* ]] || continue
+            kv="${line%%=*}"
+            if [[ -z "${prev[$kv]+x}" ]]; then
+                order+=("$kv")
+            fi
+            prev[$kv]="${line#*=}"
+        done <"$lock"
+    fi
+    for kv in "$@"; do
+        [[ "$kv" == *"="* ]] || continue
+        if [[ -z "${prev[${kv%%=*}]+x}" ]]; then
+            order+=("${kv%%=*}")
+        fi
+        prev[${kv%%=*}]="${kv#*=}"
+    done
+    tmp="$(mktemp "${lock}.XXXXXX")"
+    if [[ -f "$lock" ]]; then
+        awk -v vm="$vm" '
+            $0 == "[" vm "]" { skip = 1; next }
+            /^\[/ { skip = 0 }
+            !skip { print }
+        ' "$lock" >"$tmp"
+    fi
+    {
+        printf '[%s]\n' "$vm"
+        for kv in "${order[@]}"; do
+            printf '%s=%s\n' "$kv" "${prev[$kv]}"
+        done
+    } >>"$tmp"
+    mv "$tmp" "$lock"
+}
+
+# state_remove_prefix <vm> <prefijo>: retira de la seccion de la maquina todas
+# las claves que empiezan por el prefijo; una seccion que queda vacia se borra
+# por completo.
+state_remove_prefix() {
+    local vm="$1" prefix="$2" lock tmp
+    lock="$(state_lock_file)"
+    if [[ ! -f "$lock" ]]; then
+        return 0
+    fi
+    tmp="$(mktemp "${lock}.XXXXXX")"
+    awk -v vm="$vm" -v p="$prefix" '
+        $0 == "[" vm "]" { buf = "[" vm "]\n"; in_vm = 1; next }
+        /^\[/ {
+            if (in_vm) {
+                if (length(buf) > length(vm) + 3) printf "%s", buf
+                in_vm = 0
+            }
+            print
+            next
+        }
+        in_vm {
+            if (index($0, p) == 1) next
+            buf = buf $0 "\n"
+            next
+        }
+        { print }
+        END {
+            if (in_vm && length(buf) > length(vm) + 3) printf "%s", buf
+        }
+    ' "$lock" >"$tmp"
+    mv "$tmp" "$lock"
+}
+
+# state_remove_disk <vm> <disco>: retira el registro completo de un disco.
+state_remove_disk() {
+    state_remove_prefix "$1" "disks.$2."
+}
+
+# state_table_b64 <vm> <disco>: tabla de particiones registrada de un disco,
+# ya decodificada.
 state_table_b64() {
     local b64
-    b64="$(state_get "$1" table_b64 || true)"
+    b64="$(state_get_disk "$1" "$2" table_b64 || true)"
     if [[ -z "$b64" ]]; then
         return 1
     fi
