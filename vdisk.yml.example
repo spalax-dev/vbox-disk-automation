@@ -1,33 +1,8 @@
-# vdisk.yml.example: plantilla declarativa de vboxdisk.
-#
-# Copyright 2026 spalax-dev
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-# Copie este fichero como vdisk.yml (o pase otro con vboxdisk apply -f FILE) y
-# rellene un bloque por cada maquina virtual. La clave de primer nivel es el
-# nombre exacto de la vm tal como aparece en VBoxManage list vms.
-#
-# Claves de la maquina: vm_user y disks son obligatorias; ademas admite
-# vm_pass y vm_pass_file, de las cuales se exige al menos una.
-# Claves de cada disco: label, size, fs_type y mount_point son obligatorias;
-# file y state son opcionales.
-#
-# size acepta megabytes sin sufijo o una cifra con sufijo m, g o t, y
-# state es active (por defecto) o inactive.
-#
-# Precedencia de valores: variables de entorno VBOXDISK_* > este archivo > defecto.
-
+# vdisk.yml.example: plantilla declarativa de vboxdisk. Copie este fichero como
+# vdisk.yml (o paselo con vboxdisk apply -f FILE) y declare una maquina por
+# clave de primer nivel. Cada maquina necesita vm_user, al menos una credencial
+# (vm_pass o vm_pass_file) y la lista disks; cada disco necesita label, size,
+# fs_type y mount_point, y admite ademas file y state.
 VM1:
   vm_user: debian
   vm_pass: "cambia-esta-clave"
