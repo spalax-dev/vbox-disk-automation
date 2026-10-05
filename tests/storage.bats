@@ -41,7 +41,9 @@ setup() {
 }
 
 @test "confirm_choice sin terminal cancela la corrida" {
-    run confirm_choice "disco registrado y ausente del archivo"
+    # stdin forzado a no terminal: la prueba debe ser valida tambien cuando la
+    # suite se lanza desde una terminal interactiva.
+    run confirm_choice "disco registrado y ausente del archivo" </dev/null
     [ "$status" -eq 4 ]
     [[ "$output" == *"no es un terminal"* ]]
 }
