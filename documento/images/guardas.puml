@@ -1,0 +1,29 @@
+@startuml guardas
+
+start
+skinparam defaultFontName "Arimo"
+skinparam dpi 150
+skinparam nodesep 24
+skinparam ranksep 30
+skinparam roundCorner 12
+
+:Recibir los parámetros de la VM y leer el estado
+real con lsblk, blkid y findmnt;
+if (¿el disco declarado carece de tabla de particiones?) then (sí)
+  :Crear una tabla GPT y una partición con parted;
+else (no)
+endif
+if (¿la partición carece de sistema de archivos?) then (sí)
+  :Formatear con mkfs.ext4 o mkfs.xfs según fs_type;
+else (no)
+endif
+if (¿el montaje no está activo ni declarado en fstab?) then (sí)
+  :Crear el punto de montaje, añadir la entrada por
+  UUID en fstab y ejecutar mount -a;
+else (no)
+endif
+:Devolver en pares clave=valor el dispositivo, la tabla,
+el fstype, el UUID, el montaje y fstab;
+stop
+
+@enduml

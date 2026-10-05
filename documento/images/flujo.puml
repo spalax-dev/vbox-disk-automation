@@ -1,0 +1,28 @@
+@startuml flujo
+
+skinparam defaultFontName "Arimo"
+skinparam dpi 150
+skinparam nodesep 26
+skinparam ranksep 22
+skinparam defaultTextAlignment center
+
+start
+:Cargar bibliotecas de src/lib/ y registrar\nla trampa que borra las credenciales temporales;
+:Analizar la línea de comandos;
+if (¿Orden desconocida o\nbandera inválida?) then (sí)
+  :Mostrar el uso;
+  stop
+else (no)
+endif
+switch (¿Orden recibida?)
+case (apply)
+  :cmd_apply();\núnica rutina con efectos sobre el sistema;
+case (status)
+  :cmd_status();\nsolo lectura;
+case (ld)
+  :cmd_ld(nombre);\nsolo lectura, exige el nombre de la vm;
+endswitch
+:Terminar con el código devuelto\npor la rutina;
+stop
+
+@enduml

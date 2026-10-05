@@ -7,20 +7,6 @@ Se desarrolló una solución completa de automatización que prepara el almacena
 
 El resultado es una orden única, \texttt{vboxdisk apply}, reproducible porque la misma configuración declarativa conduce al mismo estado final, y reutilizable porque la lógica no está ligada a una \vm{} concreta: el archivo \texttt{vdisk.yml} parametriza por máquina el usuario, el disco, el tamaño, el sistema de archivos y el punto de montaje, y la misma corrida convergió sobre \texttt{VM1} con ext4 en \texttt{/mnt/datos} y sobre \texttt{VM2} con xfs en \texttt{/srv/datos}. El algoritmo es idempotente: re-ejecutar la solución sobre una \vm{} ya configurada no reformatea el disco, no pierde los datos persistidos ni duplica entradas en \texttt{/etc/fstab}, porque cada acción destructiva está precedida de una guarda de solo lectura que contrasta el estado real con el declarado \parencite{idempotency_concept}.
 
-\subsection{Cumplimiento de Requisitos del Parcial}
-
-\begin{itemize}
-    \item \textbf{Comunicación \host{}-\vm{} (3.1):} Guest Control API con obtención automática de la dirección IP a partir de la propiedad que publican las \guestadditions{} y respaldo sobre la tabla ARP, en red en modo puente \parencite{virtualbox_guestcontrol, virtualbox_networking}.
-    \item \textbf{Automatización completa (3.2):} cero intervención manual; las credenciales se pasan mediante un fichero temporal que se destruye al terminar, tanto en el \host{} como en el invitado.
-    \item \textbf{Preparación de almacenamiento (3.3):} particionado, creación del sistema de archivos, punto de montaje, entrada por UUID en \texttt{fstab} y montaje, ejecutados por el script invitado \texttt{guest\_ensure.sh} \parencite{kernel_block_devices, lsb_fhs}.
-    \item \textbf{Ejecución repetida / idempotencia (3.4):} mecanismo descrito en la Subsección~\ref{sub:algoritmo} y comprobado en la prueba~5 de la Tabla~\ref{tab:pruebas}.
-    \item \textbf{Aplicación a múltiples \vm{} (3.5):} probado con dos \vm{} cuya única diferencia son los valores de \texttt{vdisk.yml}; ninguna lógica del programa depende de una máquina particular.
-    \item \textbf{Tiempo de ejecución (3.6):} medido con los dos cronómetros integrados; las mediciones de tres corridas se reportan en la Tabla~\ref{tab:tiempos}.
-    \item \textbf{Tecnología (4):} Shell script (Bash) en un \host{} GNU/Linux, con \texttt{make} como sistema de construcción y ShellCheck y BATS como verificación \parencite{bash_best_practices, shellcheck, bats_testing}.
-    \item \textbf{Pruebas (5):} seis pruebas diseñadas con condición inicial, procedimiento, resultado esperado, resultado obtenido y evidencia, en la Tabla~\ref{tab:pruebas}.
-    \item \textbf{Escenario (6):} diagrama de despliegue y descripción en la Sección~\ref{sub:escenario}.
-\end{itemize}
-
 \subsection{Problemas Encontrados y su Solución}
 
 El desarrollo presentó cuatro problemas que se resolvieron de la siguiente manera.
