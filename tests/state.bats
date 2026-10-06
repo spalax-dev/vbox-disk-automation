@@ -90,6 +90,21 @@ setup() {
     [ "$status" -eq 0 ]
 }
 
+@test "state_vms lista las secciones registradas en orden" {
+    state_set_vm VM1 "ip=192.168.1.16"
+    state_set_vm VM2 "ip=192.168.1.18"
+    run state_vms
+    [ "$status" -eq 0 ]
+    [ "${lines[0]}" = "VM1" ]
+    [ "${lines[1]}" = "VM2" ]
+}
+
+@test "state_vms sin state.lock termina sin salida" {
+    run state_vms
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
 @test "state_update_vm fusiona sin borrar las claves existentes" {
     state_update_vm VM1 "disks.disk1.state=active" "disks.disk1.uuid=aaa" "ip=192.168.1.16"
     state_update_vm VM1 "disks.disk1.uuid=bbb"
@@ -106,6 +121,17 @@ setup() {
     [ "$status" -eq 1 ]
     [ "$(state_get_disk VM1 disk2 state)" = "active" ]
     [ "$(state_get VM1 ip)" = "192.168.1.16" ]
+}
+
+@test "state_remove_vm retira la seccion completa y conserva a las demas" {
+    state_update_vm VM1 "ip=192.168.1.16"
+    state_update_vm VM2 "ip=192.168.1.18"
+    state_remove_vm VM1
+    run state_get VM1 ip
+    [ "$status" -eq 1 ]
+    [ "$(state_get VM2 ip)" = "192.168.1.18" ]
+    run state_vms
+    [ "${lines[0]}" = "VM2" ]
 }
 
 @test "el hash declarado distingue a las maquinas y es estable" {

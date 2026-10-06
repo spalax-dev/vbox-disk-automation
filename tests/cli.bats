@@ -134,6 +134,66 @@ setup() {
     [[ "$output" != *"requiere decision"* ]]
 }
 
+@test "apply --dry-run atiende primero la vm registrada ausente del archivo" {
+    mkdir -p "$VBOXDISK_STATE_DIR"
+    printf '%s\n' '[VM9]' 'disks.viejo.state=active' \
+        >"$VBOXDISK_STATE_DIR/state.lock"
+    run "$ENTRY" apply --dry-run -f "$FIX/valid.yml"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"VM9: la vm ya no figura en el archivo declarativo; decision pendiente sobre sus discos registrados"* ]]
+    [[ "$output" == *"viejo: sigue registrado y requiere decision"* ]]
+    vm9="$(printf '%s\n' "$output" | grep -n '^VM9:' | cut -d: -f1)"
+    vm1="$(printf '%s\n' "$output" | grep -n '^VM1:' | cut -d: -f1)"
+    [ "$vm9" -lt "$vm1" ]
+}
+
+@test "apply --dry-run de una vm ausente sin discos activos no pide decision" {
+    mkdir -p "$VBOXDISK_STATE_DIR"
+    printf '%s\n' '[VM9]' 'disks.viejo.state=inactive' \
+        >"$VBOXDISK_STATE_DIR/state.lock"
+    run "$ENTRY" apply --dry-run -f "$FIX/valid.yml"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"VM9: la vm ya no figura en el archivo declarativo y no tiene decisiones pendientes"* ]]
+    [[ "$output" != *"requiere decision"* ]]
+}
+
+@test "apply_vm se retira en una vm ausente cuyo registro ya no tiene discos activos" {
+    export VBOXDISK_FILE="$FIX/valid.yml"
+    source "$REPO/src/lib/common.sh"
+    source "$REPO/src/lib/config.sh"
+    source "$REPO/src/lib/state.sh"
+    source "$REPO/src/lib/vbox.sh"
+    source "$REPO/src/lib/storage.sh"
+    source "$REPO/src/lib/apply.sh"
+    mkdir -p "$VBOXDISK_STATE_DIR"
+    printf '%s\n' '[VM9]' 'disks.viejo.state=inactive' \
+        >"$VBOXDISK_STATE_DIR/state.lock"
+    run apply_vm VM9
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"VM9: ausente del archivo declarativo; se retira su seccion de state.lock"* ]]
+    [[ "$output" != *"convergencia verificada"* ]]
+    run state_vms
+    [[ "$output" != *"VM9"* ]]
+}
+
+@test "apply_vm en una vm ausente formula la consulta y sin terminal cancela" {
+    export VBOXDISK_FILE="$FIX/valid.yml"
+    source "$REPO/src/lib/common.sh"
+    source "$REPO/src/lib/config.sh"
+    source "$REPO/src/lib/state.sh"
+    source "$REPO/src/lib/vbox.sh"
+    source "$REPO/src/lib/storage.sh"
+    source "$REPO/src/lib/apply.sh"
+    mkdir -p "$VBOXDISK_STATE_DIR"
+    printf '%s\n' '[VM9]' 'disks.viejo.state=active' \
+        >"$VBOXDISK_STATE_DIR/state.lock"
+    run apply_vm VM9 </dev/null
+    [ "$status" -eq 4 ]
+    [[ "$output" == *"VM9: la maquina ya no figura en el archivo declarativo y su disco 'viejo' sigue registrado. Que se hace?"* ]]
+    [[ "$output" == *"no hay terminal donde preguntar"* ]]
+    [[ "$output" != *"convergencia verificada"* ]]
+}
+
 @test "apply --dry-run con vm ausente en el hipervisor termina con 1" {
     run "$ENTRY" apply --dry-run -f "$FIX/unknown_vm.yml"
     [ "$status" -eq 1 ]

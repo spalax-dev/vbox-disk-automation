@@ -78,6 +78,16 @@ state_disk_keys() {
     ' "$lock"
 }
 
+# state_vms: maquinas con seccion en state.lock, en orden de registro.
+state_vms() {
+    local lock
+    lock="$(state_lock_file)"
+    if [[ ! -f "$lock" ]]; then
+        return 0
+    fi
+    awk '/^\[/ { sub(/^\[/, ""); sub(/\]$/, ""); print }' "$lock"
+}
+
 # state_set_vm <vm> <clave=valor>...  Reescribe o anade la entrada completa.
 state_set_vm() {
     local vm="$1"
@@ -193,6 +203,22 @@ state_remove_prefix() {
 # state_remove_disk <vm> <disco>: retira el registro completo de un disco.
 state_remove_disk() {
     state_remove_prefix "$1" "disks.$2."
+}
+
+# state_remove_vm <vm>: retira la seccion completa de la maquina.
+state_remove_vm() {
+    local vm="$1" lock tmp
+    lock="$(state_lock_file)"
+    if [[ ! -f "$lock" ]]; then
+        return 0
+    fi
+    tmp="$(mktemp "${lock}.XXXXXX")"
+    awk -v vm="$vm" '
+        $0 == "[" vm "]" { skip = 1; next }
+        /^\[/ { skip = 0 }
+        !skip { print }
+    ' "$lock" >"$tmp"
+    mv "$tmp" "$lock"
 }
 
 # state_table_b64 <vm> <disco>: tabla de particiones registrada de un disco,

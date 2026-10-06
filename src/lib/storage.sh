@@ -389,8 +389,9 @@ storage_orphan_disks() {
 storage_plan_vm() {
     local vm="$1"
     local desired stored fp stored_fp power disk file size fstate
-    local plan extra="" orphans=0
+    local plan extra="" orphans=0 declared_vm=1
     local -a details=()
+    cfg_vms | grep -Fxq "$vm" || declared_vm=0
     desired="$(storage_desired_hash "$vm")"
     stored="$(state_get "$vm" desired_hash || true)"
     fp="$(storage_fingerprint "$vm")"
@@ -415,10 +416,20 @@ storage_plan_vm() {
 
     while IFS= read -r disk; do
         orphans=$((orphans + 1))
-        details+=("$disk: registrado y ausente del archivo declarativo; requiere decision")
+        if ((declared_vm)); then
+            details+=("$disk: registrado y ausente del archivo declarativo; requiere decision")
+        else
+            details+=("$disk: sigue registrado y requiere decision")
+        fi
     done < <(storage_orphan_disks "$vm")
 
-    if [[ -z "$stored" ]]; then
+    if ((declared_vm == 0)); then
+        if ((orphans > 0)); then
+            plan="la vm ya no figura en el archivo declarativo; decision pendiente sobre sus discos registrados"
+        else
+            plan="la vm ya no figura en el archivo declarativo y no tiene decisiones pendientes"
+        fi
+    elif [[ -z "$stored" ]]; then
         plan="primera aplicacion: preparar el almacenamiento declarado"
     elif [[ "$desired" != "$stored" ]]; then
         plan="cambios declarados pendientes respecto del ultimo registro"

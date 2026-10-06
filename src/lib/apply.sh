@@ -27,11 +27,25 @@ VBOXDISK_SESSION_PASS=""
 # una y agrega al final el codigo de mayor severidad de la corrida.
 cmd_apply() {
     validate_config 1
+    local -A in_file=()
+    local -a declared_vms=() vms=()
+    local vm
+    while IFS= read -r vm; do
+        in_file["$vm"]=1
+        declared_vms+=("$vm")
+    done < <(cfg_vms)
+    # Las vm registradas que el archivo ya no declara vienen primero: su
+    # decision se toma antes de preparar cualquier otra maquina.
+    while IFS= read -r vm; do
+        [[ -n "${in_file[$vm]+x}" ]] || vms+=("$vm")
+    done < <(state_vms)
+    for vm in "${declared_vms[@]}"; do
+        vms+=("$vm")
+    done
     if ((DRY_RUN == 1)); then
-        local vm
-        while IFS= read -r vm; do
+        for vm in "${vms[@]}"; do
             storage_plan_vm "$vm"
-        done < <(cfg_vms)
+        done
         exit "$VBOXDISK_OK"
     fi
     if [[ ! -f "$GUEST_SCRIPT" ]]; then
@@ -41,8 +55,8 @@ cmd_apply() {
     state_open_log
     total_start
     local -a codes=()
-    local vm rc final
-    while IFS= read -r vm; do
+    local rc final
+    for vm in "${vms[@]}"; do
         rc=0
         apply_vm "$vm" || rc=$?
         codes+=("$rc")
@@ -50,7 +64,7 @@ cmd_apply() {
             log_warn "se detiene la corrida por cancelacion del usuario"
             break
         fi
-    done < <(cfg_vms)
+    done
     final="$(aggregate_code "${codes[@]}")"
     log_info "resumen: tiempo total $(total_seconds)s; codigo de salida $final"
     exit "$final"
@@ -198,7 +212,7 @@ guest_run() {
 apply_vm() {
     local vm="$1"
     local desired stored fp stored_fp power rc=0 ip ready_t=0
-    local disk file size fstate att uuid drift=0
+    local disk file size fstate att uuid drift=0 declared_vm=1 prompt
     local -a declared=() orphans=() todo_active=() todo_release=() todo_delete=()
     local -a kv=()
 
@@ -215,18 +229,28 @@ apply_vm() {
     done < <(storage_orphan_disks "$vm")
 
     # Etapa 1: verificacion declarativa y preparacion del host.
+    cfg_vms | grep -Fxq "$vm" || declared_vm=0
     stage_begin 1 "verificacion declarativa de $vm"
-    if [[ -n "$stored" && "$stored" == "$desired" && "$fp" == "$stored_fp" &&
-        "$power" == "poweroff" && ${#orphans[@]} -eq 0 ]]; then
+    if ((declared_vm)) &&
+        [[ -n "$stored" && "$stored" == "$desired" && "$fp" == "$stored_fp" &&
+            "$power" == "poweroff" && ${#orphans[@]} -eq 0 ]]; then
         stage_end
         log_info "$vm: sin cambios; la maquina coincide con lo declarado y permanece apagada"
         return 0
     fi
 
     # Discos registrados que el archivo ya no declara: la decision del usuario
-    # se toma antes de preparar nada, para que el retiro quede ordenado.
+    # se toma antes de preparar nada, para que el retiro quede ordenado. Una
+    # vm completa retirada del archivo se resuelve con la misma consulta,
+    # disco a disco, y una vez decidida no vuelve a consultarse si no queda
+    # ningun disco activo.
     for disk in "${orphans[@]}"; do
-        if ! confirm_choice "$vm: el disco '$disk' esta registrado y ya no figura en el archivo declarativo. Que se hace?"; then
+        if ((declared_vm)); then
+            prompt="$vm: el disco '$disk' esta registrado y ya no figura en el archivo declarativo. Que se hace?"
+        else
+            prompt="$vm: la maquina ya no figura en el archivo declarativo y su disco '$disk' sigue registrado. Que se hace?"
+        fi
+        if ! confirm_choice "$prompt"; then
             stage_end "$VBOXDISK_E_CANCEL"
             return "$VBOXDISK_E_CANCEL"
         fi
@@ -240,6 +264,20 @@ apply_vm() {
                 ;;
         esac
     done
+
+    # Una vm ausente del archivo sin discos por resolver no se prepara ni se
+    # enciende: si su seccion ya no contiene discos activos, se retira del
+    # estado para que la siguiente corrida no vuelva a considerarla.
+    if ((declared_vm == 0)) && ((${#todo_release[@]} == 0)); then
+        stage_end
+        if [[ -z "$(storage_orphan_disks "$vm")" ]]; then
+            state_remove_vm "$vm"
+            log_info "$vm: ausente del archivo declarativo; se retira su seccion de state.lock"
+        else
+            log_info "$vm: ausente del archivo declarativo; se conservan sus discos registrados"
+        fi
+        return 0
+    fi
 
     for disk in "${declared[@]}"; do
         fstate="$(cfg_disk_state "$vm" "$disk")"
@@ -460,6 +498,11 @@ apply_vm() {
     for disk in "${todo_delete[@]}"; do
         state_remove_disk "$vm" "$disk"
     done
+    # Una vm ausente del archivo cuyos discos quedaron eliminados o
+    # inactivados no deja rastro en el estado.
+    if ((declared_vm == 0)) && [[ -z "$(storage_orphan_disks "$vm")" ]]; then
+        state_remove_vm "$vm"
+    fi
     stage_end
     log_info "$vm: convergencia verificada y registrada (disponible en ${ready_t}s)"
     return 0
