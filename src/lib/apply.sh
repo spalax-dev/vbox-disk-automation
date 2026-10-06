@@ -169,7 +169,7 @@ guest_run() {
             printf '%s\n' "$line" >>"$VBOXDISK_LOG_FILE"
         fi
         if [[ -z "${VBOXDISK_GUEST_QUIET:-}" ]]; then
-            printf '%s\n' "$line" >&2
+            emit_line "$line"
         fi
     done <<<"$out"
 
@@ -227,7 +227,7 @@ apply_vm() {
     # se toma antes de preparar nada, para que el retiro quede ordenado.
     for disk in "${orphans[@]}"; do
         if ! confirm_choice "$vm: el disco '$disk' esta registrado y ya no figura en el archivo declarativo. Que se hace?"; then
-            stage_end
+            stage_end "$VBOXDISK_E_CANCEL"
             return "$VBOXDISK_E_CANCEL"
         fi
         case "$CHOICE" in
@@ -253,13 +253,13 @@ apply_vm() {
         fi
         todo_active+=("$disk")
         file="$(storage_disk_file "$vm" "$disk")" || {
-            stage_end
+            stage_end "$VBOXDISK_E_STORAGE"
             return "$VBOXDISK_E_STORAGE"
         }
         size="$(cfg_disk_size_mb "$vm" "$disk")"
         storage_ensure_medium "$vm" "$file" "$size" || rc=$?
         if ((rc != 0)); then
-            stage_end
+            stage_end "$rc"
             return "$rc"
         fi
     done
@@ -277,7 +277,7 @@ apply_vm() {
         fi
     fi
     ready_t=$(($(now_s) - ready_t))
-    stage_end
+    stage_end "$rc"
     if ((rc != 0)); then
         return "$rc"
     fi
@@ -287,7 +287,7 @@ apply_vm() {
     stage_begin 3 "identificacion de la direccion IP de $vm"
     rc=0
     ip="$(vbox_detect_ip "$vm" "$VBOXDISK_IP_TIMEOUT")" || rc=$?
-    stage_end
+    stage_end "$rc"
     if ((rc != 0)); then
         log_error "$vm: direccion IP no disponible tras ${VBOXDISK_IP_TIMEOUT}s (propiedad de Guest Additions y respaldo ARP)"
         return "$VBOXDISK_E_COMM"
@@ -300,7 +300,7 @@ apply_vm() {
     rc=0
     guest_session_open "$vm" || rc=$?
     if ((rc != 0)); then
-        stage_end
+        stage_end "$rc"
         return "$rc"
     fi
 
@@ -318,7 +318,7 @@ apply_vm() {
         if ((rc != 0)); then
             log_error "$vm/$disk: fallo al liberar el montaje del disco"
             guest_session_close "$vm"
-            stage_end
+            stage_end "$rc"
             return "$rc"
         fi
     done
@@ -330,7 +330,7 @@ apply_vm() {
         if ((rc != 0)); then
             log_error "$vm/$disk: el sondeo de solo lectura fallo con codigo $rc"
             guest_session_close "$vm"
-            stage_end
+            stage_end "$rc"
             return "$rc"
         fi
         guest_snapshot "$vm" "$disk"
@@ -339,7 +339,7 @@ apply_vm() {
     if ((drift == 1)); then
         if ! confirm "$vm: el invitado difiere del ultimo registro de la solucion. Forzar la sincronizacion con lo declarado?"; then
             guest_session_close "$vm"
-            stage_end
+            stage_end "$VBOXDISK_E_CANCEL"
             return "$VBOXDISK_E_CANCEL"
         fi
     fi
@@ -352,7 +352,7 @@ apply_vm() {
         if ((rc != 0)); then
             log_error "$vm/$disk: la convergencia del almacenamiento fallo con codigo $rc"
             guest_session_close "$vm"
-            stage_end
+            stage_end "$rc"
             return "$rc"
         fi
     done
@@ -367,7 +367,7 @@ apply_vm() {
         rc=0
         storage_verify_guest "$vm" "$disk" || rc=$?
         if ((rc != 0)); then
-            stage_end
+            stage_end "$rc"
             return "$rc"
         fi
     done
@@ -375,28 +375,28 @@ apply_vm() {
     for disk in "${todo_release[@]}"; do
         if cfg_disk_keys "$vm" "$VBOXDISK_FILE" | grep -Fxq "$disk"; then
             file="$(storage_disk_file "$vm" "$disk")" || {
-                stage_end
+                stage_end "$VBOXDISK_E_STORAGE"
                 return "$VBOXDISK_E_STORAGE"
             }
         else
             file="$(state_get_disk "$vm" "$disk" file || true)"
         fi
         [[ -n "$file" ]] || {
-            stage_end
+            stage_end "$VBOXDISK_E_STORAGE"
             log_error "$vm/$disk: no se conoce el fichero del disco para desprenderlo"
             return "$VBOXDISK_E_STORAGE"
         }
         rc=0
         storage_ensure_detached "$vm" "$file" || rc=$?
         if ((rc != 0)); then
-            stage_end
+            stage_end "$rc"
             return "$rc"
         fi
         if in_list "$disk" "${todo_delete[@]}"; then
             rc=0
             storage_delete_medium "$vm" "$file" || rc=$?
             if ((rc != 0)); then
-                stage_end
+                stage_end "$rc"
                 return "$rc"
             fi
         fi
@@ -405,7 +405,7 @@ apply_vm() {
     kv=("desired_hash=$desired" "fingerprint=$fp" "ip=$ip" "last_run=$(date '+%Y-%m-%d %H:%M:%S')")
     for disk in "${todo_active[@]}"; do
         file="$(storage_disk_file "$vm" "$disk")" || {
-            stage_end
+            stage_end "$VBOXDISK_E_STORAGE"
             return "$VBOXDISK_E_STORAGE"
         }
         size="$(cfg_disk_size_mb "$vm" "$disk")"

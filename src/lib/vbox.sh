@@ -68,6 +68,7 @@ vbox_start() {
             ;;
         "" | poweroff | aborted | saved | paused | stuck | teleported)
             # Cualquier estado apagado o guardado admite startvm headless.
+            log_info "$vm: encendiendo en modo headless"
             if ! VBoxManage startvm "$vm" --type headless >/dev/null 2>&1; then
                 log_error "no se pudo encender $vm con VBoxManage startvm"
                 return "$VBOXDISK_E_COMM"
@@ -82,6 +83,7 @@ vbox_start() {
         if [[ "$(vbox_power_state "$vm" || true)" == "running" ]]; then
             return 0
         fi
+        bar_tick
         sleep 1
     done
     log_error "$vm no alcanzo el estado running tras el arranque"
@@ -98,12 +100,28 @@ vbox_stop() {
         if [[ "$state" == "poweroff" || "$state" == "aborted" || "$state" == "saved" ]]; then
             return 0
         fi
+        bar_tick
         sleep 2
     done
     log_warn "$vm no respondio al apagado ACPI; se fuerza el apagado"
     VBoxManage controlvm "$vm" poweroff >/dev/null 2>&1 || true
+    bar_tick
     sleep 2
     return 0
+}
+
+# vbox_guest_ready <vm>: 0 si Guest Additions publica su version. VBox 7.2
+# usa /VirtualBox/GuestAdd/Version y otros empaquetados publican
+# /VirtualBox/GuestAdditions/Version; se acepta cualquiera de las dos para
+# no depender del nombre que elija cada empaquetado.
+vbox_guest_ready() {
+    local vm="$1" prop
+    for prop in /VirtualBox/GuestAdd/Version /VirtualBox/GuestAdditions/Version; do
+        if VBoxManage guestproperty get "$vm" "$prop" 2>/dev/null | grep -q '^Value:'; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 # vbox_wait_ready <vm> <segundos>: aguarda a que VBoxService publique propiedades.
@@ -111,13 +129,13 @@ vbox_wait_ready() {
     local vm="$1" timeout="${2:-120}" t0
     t0="$(now_s)"
     while :; do
-        if VBoxManage guestproperty get "$vm" /VirtualBox/GuestAdditions/Version 2>/dev/null |
-            grep -q '^Value:'; then
+        if vbox_guest_ready "$vm"; then
             return 0
         fi
         if (($(now_s) - t0 >= timeout)); then
             return 1
         fi
+        bar_tick
         sleep 2
     done
 }
@@ -174,6 +192,7 @@ vbox_detect_ip() {
         if (($(now_s) - t0 >= timeout)); then
             return 1
         fi
+        bar_tick
         sleep 2
     done
 }
@@ -206,12 +225,16 @@ vbox_guest_mktemp_dir() {
 # como la ruta del fichero de destino y falla contra un directorio existente
 # con el mismo nombre.
 vbox_guest_copy_to() {
-    local vm="$1" dir="$2" file="$3"
+    local vm="$1" dir="$2" file="$3" out rc=0
     case "$dir" in
         */) ;;
         *) dir="$dir/" ;;
     esac
-    vbox_gc "$vm" copyto --quiet --target-directory="$dir" "$file"
+    # La salida del hipervisor se captura para no empujar la barra ni
+    # pegarsela a los registros de la etapa; se conserva en la bitacora.
+    out="$(vbox_gc "$vm" copyto --quiet --target-directory="$dir" "$file" 2>&1)" || rc=$?
+    log_raw "$out"
+    return "$rc"
 }
 
 # vbox_guest_run <vm> <cwd> <segundos> <script> [args...]:

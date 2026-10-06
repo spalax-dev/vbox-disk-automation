@@ -247,6 +247,39 @@ setup() {
     [ "$status" -eq 1 ]
 }
 
+@test "vbox_detect_ip obtiene la direccion de la propiedad del invitado" {
+    source "$REPO/src/lib/common.sh"
+    source "$REPO/src/lib/vbox.sh"
+    export VBOXDISK_MOCK_IP=192.168.1.16
+    run vbox_detect_ip VM1 0
+    unset VBOXDISK_MOCK_IP
+    [ "$status" -eq 0 ]
+    [ "$output" = "192.168.1.16" ]
+}
+
+@test "vbox_wait_ready acepta la version publicada como GuestAdd" {
+    source "$REPO/src/lib/common.sh"
+    source "$REPO/src/lib/vbox.sh"
+    export VBOXDISK_MOCK_GA_VERSION=7.2.20
+    run vbox_wait_ready VM1 1
+    [ "$status" -eq 0 ]
+}
+
+@test "vbox_wait_ready acepta tambien la version publicada como GuestAdditions" {
+    source "$REPO/src/lib/common.sh"
+    source "$REPO/src/lib/vbox.sh"
+    export VBOXDISK_MOCK_GA_VERSION_LEGACY=7.2.18
+    run vbox_wait_ready VM1 1
+    [ "$status" -eq 0 ]
+}
+
+@test "vbox_wait_ready agota el tiempo sin ninguna version publicada" {
+    source "$REPO/src/lib/common.sh"
+    source "$REPO/src/lib/vbox.sh"
+    run vbox_wait_ready VM1 0
+    [ "$status" -eq 1 ]
+}
+
 @test "la salida clave=valor del invitado se interpreta con su centinela" {
     source "$REPO/src/lib/storage.sh"
     storage_parse_guest_output "$(printf '%s\n' \

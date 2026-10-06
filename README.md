@@ -20,7 +20,7 @@ vboxdisk ld VM1         # tabla de particiones de VM1 (registrada o en vivo)
   la misma corrida siempre lleva al mismo estado final.
 - **Multi-vm y multi-disco**: cada vm declara una lista `disks`, con tamaño,
   sistema de archivos (`ext4`/`xfs`), punto de montaje y etiqueta por disco.
-- **Idempotente**: cada acción destructiva (`parted`, `mkfs`, `mount`) está
+- **Idempotente**: cada acción destructiva (`sfdisk`, `mkfs`, `mount`) está
   precedida de una guarda de solo lectura; re-ejecutar no reformatea ni duplica
   entradas en `fstab`.
 - **No destructivo sin confirmar**: `--dry-run` muestra el plan sin tocar nada;
@@ -49,7 +49,7 @@ vboxdisk ld VM1         # tabla de particiones de VM1 (registrada o en vivo)
 
 - Guest Additions con `VBoxService` corriendo - en Debian: `virtualbox-guest-utils`
   (instalado desde Fast Track en Debian 13).
-- `parted`, util-linux, `sudo`, y las utilidades de `ext4` (`e2fsprogs`) o
+- util-linux (con `sfdisk`), `sudo`, y las utilidades de `ext4` (`e2fsprogs`) o
   `xfsprogs` según declares.
 - Un disco de datos **nuevo y vacío** por disco declarado (los `.vdi` recién
   creados cumplen esto); el disco del sistema nunca se toca.
@@ -61,13 +61,15 @@ make checkdeps   # comprueba dependencias sin instalar nada
 make lint        # shellcheck
 make test        # pruebas BATS
 make install     # encadena las tres y solo entonces instala
-make uninstall   # retira ejecutable, librerías y bloque del PATH
+make uninstall   # retira ejecutable y librerías (no toca tu perfil)
 ```
 
 `make install` no necesita privilegios: copia el ejecutable en `~/.local/bin`,
 las bibliotecas en `~/.local/share/vboxdisk/` y, si hace falta, añade un bloque
 delimitado a `~/.bashrc`/`~/.zshrc` con ese directorio en el `PATH`. Abre una
-sesión nueva después de instalar.
+sesión nueva después de instalar. `make uninstall` retira el ejecutable y las
+bibliotecas, pero no vuelve a modificar `~/.bashrc` ni `~/.zshrc`: retirar ese
+bloque queda en tus manos.
 
 También puedes ejecutarlo sin instalar desde el repositorio:
 
@@ -169,7 +171,7 @@ tail -f "$(ls -t ~/.local/share/vboxdisk/state/*.log | head -1)"
 ```
 
 `status` y `ld` son de solo lectura y no escriben bitácora. `make uninstall`
-conserva estado, bitácoras y `vdisk.yml`.
+conserva estado, bitácoras, `vdisk.yml` y el perfil del usuario.
 
 ## Desarrollo
 

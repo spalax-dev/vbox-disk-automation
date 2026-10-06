@@ -21,6 +21,12 @@
 # centinela VBOXDISK_EXIT=<n> en la salida estandar.
 set -uo pipefail
 
+# Guest Control arranca el script sin los directorios sbin, donde viven
+# sfdisk, blockdev, blkid, mkfs y e2label; se completan antes de cualquier
+# llamada.
+PATH="/usr/local/sbin:/usr/sbin:/sbin:$PATH"
+export PATH
+
 ORIG_ARGS=("$@")
 PROBE=0
 RELEASE=0
@@ -350,7 +356,7 @@ collect() {
 }
 
 # wait_for_partition: aguarda hasta 15 s a que udev publique la particion
-# recien creada por parted.
+# recien creada por sfdisk.
 wait_for_partition() {
     local i
     for ((i = 0; i < 15; i++)); do
@@ -444,12 +450,15 @@ converge() {
     collect
     if [[ "$G_TABLE" == "none" ]]; then
         echo "guest_ensure: creando tabla GPT en $G_DEV" >&2
-        parted -s "$G_DEV" mklabel gpt mkpart primary 1MiB 100% ||
-            fail "parted fallo al crear la tabla de particiones en $G_DEV"
-        partprobe "$G_DEV" 2>/dev/null || true
+        # sfdisk viene con el fdisk de util-linux, presente en toda
+        # distro; parte la particion de 1MiB al final del disco y pide
+        # al kernel que relea la tabla.
+        printf 'label: gpt\nstart=1MiB\n' | sfdisk --quiet "$G_DEV" ||
+            fail "sfdisk fallo al crear la tabla de particiones en $G_DEV"
+        blockdev --rereadpt "$G_DEV" 2>/dev/null || true
         udevadm settle 2>/dev/null || true
         wait_for_partition ||
-            fail "la particion no aparecio tras parted en $G_DEV"
+            fail "la particion no aparecio tras sfdisk en $G_DEV"
         collect
     fi
     if [[ -z "$G_PART" ]]; then

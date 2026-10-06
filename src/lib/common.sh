@@ -35,6 +35,9 @@ VBOXDISK_STAGE_T0=0
 VBOXDISK_STAGE_NAME=""
 VBOXDISK_STAGE_TOTAL=5
 VBOXDISK_STAGE_OPEN=0
+# Con la barra pintada ocupa el ultimo renglon del bloque de su etapa y el
+# cursor queda a su final; todo mensaje la empuja hacia arriba y la repite
+# debajo, solo con \r, \x1b[K y salto de linea.
 VBOXDISK_STAGE_PAINTED=0
 
 # now_s: segundos desde la epoca, base de todos los cronometros.
@@ -46,23 +49,12 @@ have_cmd() { command -v "$1" >/dev/null 2>&1; }
 # is_tty: 0 si stderr es un terminal (ahi cabe la barra de progreso).
 is_tty() { [[ -t 2 ]]; }
 
-# bar_clear: borra la linea de la barra cuando esta pintada, para que un
-# registro o una pregunta no se peguen al avance de la etapa.
-bar_clear() {
-    if ((VBOXDISK_STAGE_PAINTED == 1)); then
-        printf '\r\033[K' >&2
-        VBOXDISK_STAGE_PAINTED=0
-    fi
-}
-
-# bar_paint: vuelve a pintar la barra si hay etapa en curso y stderr es tty.
-bar_paint() {
-    local filled width i bar=""
-    ((VBOXDISK_STAGE_OPEN == 1)) || return 0
-    is_tty || return 0
+# bar_segment: "[n/T] [barra] nombre" de la etapa en curso, sin el tiempo,
+# para componer tanto la barra viva como el cierre de la etapa.
+bar_segment() {
+    local filled i bar=""
     filled=$((VBOXDISK_STAGE_N - 1))
-    width=20
-    for ((i = 0; i < width; i++)); do
+    for ((i = 0; i < 20; i++)); do
         if ((i < filled)); then
             bar+="="
         elif ((i == filled)); then
@@ -71,13 +63,84 @@ bar_paint() {
             bar+=" "
         fi
     done
-    printf '\r[%d/%d] [%s] %s' "$VBOXDISK_STAGE_N" "$VBOXDISK_STAGE_TOTAL" "$bar" "$VBOXDISK_STAGE_NAME" >&2
+    printf '[%d/%d] [%s] %s' \
+        "$VBOXDISK_STAGE_N" "$VBOXDISK_STAGE_TOTAL" "$bar" "$VBOXDISK_STAGE_NAME"
+}
+
+# bar_text: segmento de la barra con el tiempo transcurrido de la etapa.
+bar_text() {
+    printf '%s %ds' "$(bar_segment)" "$(( $(now_s) - VBOXDISK_STAGE_T0 ))"
+}
+
+# bar_paint: pinta la barra de la etapa en su propio renglon, el ultimo del
+# bloque, sin cerrarlo: el cursor queda al final de la barra y lo que la
+# etapa escriba (registros, salidas del invitado, preguntas) la empuja hacia
+# arriba. Solo actua cuando stderr es terminal; en cualquier otra salida la
+# etapa usa la linea plana.
+bar_paint() {
+    ((VBOXDISK_STAGE_OPEN == 1)) || return 0
+    is_tty || return 0
+    printf '\r\033[K%s' "$(bar_text)" >&2
     VBOXDISK_STAGE_PAINTED=1
 }
 
+# bar_tick: refresca la barra en su renglon con el tiempo actualizado,
+# limpiandolo y volviendolo a escribir sin salto de linea, de modo que el
+# cursor sigue al final de la barra. Sin barra pintada no hace nada.
+bar_tick() {
+    ((VBOXDISK_STAGE_PAINTED == 1)) || return 0
+    is_tty || return 0
+    printf '\r\033[K%s' "$(bar_text)" >&2
+}
+
+# emit_line <texto>: escribe una linea empujando la barra hacia arriba: limpia
+# su renglon, pone el mensaje y repite la barra debajo, sin cerrarla, para que
+# siempre quede al final. Con la barra pintada toda la salida de la etapa
+# debe pasar por aqui; cualquier mensaje mas ancho que el terminal se parte
+# en varias filas y la barra desciende igual, sin contarlas.
+emit_line() {
+    if ((VBOXDISK_STAGE_PAINTED == 1)); then
+        printf '\r\033[K%s\n\r\033[K%s' "$1" "$(bar_text)" >&2
+    else
+        printf '%s\n' "$1" >&2
+    fi
+}
+
+# bar_suspend: retira la barra del renglon antes de escribir un prompt, para
+# que la pregunta ocupe ese renglon. Sin barra pintada no hace nada.
+bar_suspend() {
+    ((VBOXDISK_STAGE_PAINTED == 1)) || return 0
+    printf '\r\033[K' >&2
+    VBOXDISK_STAGE_PAINTED=0
+}
+
+# bar_resume: vuelve a pintar la barra en el renglon corriente, al terminar
+# la respuesta al prompt. Fuera de una etapa no hace nada.
+bar_resume() {
+    ((VBOXDISK_STAGE_OPEN == 1)) || return 0
+    bar_paint
+}
+
+# close_prompt_line: cierra el renglon de un prompt cuya respuesta no llego
+# completa y repite la barra, para que el mensaje siguiente no se pegue a la
+# pregunta.
+close_prompt_line() {
+    printf '\n' >&2
+    bar_resume
+}
+
+# bar_finalize: en la trampa de salida cierra el renglon de una barra que
+# quede pintada, para que el prompt no se pegue al avance.
+bar_finalize() {
+    if ((VBOXDISK_STAGE_PAINTED == 1)); then
+        printf '\n' >&2
+        VBOXDISK_STAGE_PAINTED=0
+    fi
+}
+
 # log <nivel> <mensaje>: sello de tiempo y nivel a stderr y, si hay bitacora,
-# la misma linea al fichero de la corrida. La barra se borra antes de escribir
-# y se repinta despues, de modo que ningun mensaje queda a medio renglon.
+# la misma linea al fichero de la corrida. La linea se emite empujando la
+# barra hacia arriba, que vuelve a ocupar el renglon de abajo.
 log() {
     local level="$1"
     shift
@@ -86,9 +149,18 @@ log() {
     if [[ -n "${VBOXDISK_LOG_FILE:-}" ]]; then
         printf '%s\n' "$line" >>"$VBOXDISK_LOG_FILE"
     fi
-    bar_clear
-    printf '%s\n' "$line" >&2
-    bar_paint
+    emit_line "$line"
+}
+
+# log_raw <texto>: conserva la salida cruda de un comando externo (el chatter
+# del hipervisor) en la bitacora sin sacarla al terminal, para que no
+# contamine la barra ni la salida visible.
+log_raw() {
+    [[ -n "${1:-}" ]] || return 0
+    if [[ -n "${VBOXDISK_LOG_FILE:-}" ]]; then
+        printf '%s\n' "$1" >>"$VBOXDISK_LOG_FILE"
+    fi
+    return 0
 }
 
 # Atajos de registro por nivel.
@@ -117,8 +189,12 @@ die() {
 read_answer() {
     local prompt="$1" answer
     if [[ -t 0 ]]; then
+        bar_suspend
         printf '%s ' "$prompt" >&2
-        IFS= read -r answer || return 2
+        if ! IFS= read -r answer; then
+            return 2
+        fi
+        bar_resume
         printf '%s' "$answer"
         return 0
     fi
@@ -126,8 +202,12 @@ read_answer() {
     if ! { exec 0</dev/tty; } 2>/dev/null; then
         return 1
     fi
+    bar_suspend
     printf '%s ' "$prompt" >&2
-    IFS= read -r answer || return 2
+    if ! IFS= read -r answer; then
+        return 2
+    fi
+    bar_resume
     printf '%s' "$answer"
 }
 
@@ -146,6 +226,7 @@ confirm() {
         return "$VBOXDISK_E_CANCEL"
     fi
     if ((rc == 2)); then
+        close_prompt_line
         log_warn "lectura de la respuesta interrumpida"
         return "$VBOXDISK_E_CANCEL"
     fi
@@ -198,6 +279,7 @@ confirm_choice() {
         return "$VBOXDISK_E_CANCEL"
     fi
     if ((rc == 2)); then
+        close_prompt_line
         log_warn "lectura de la respuesta interrumpida"
         return "$VBOXDISK_E_CANCEL"
     fi
@@ -216,6 +298,7 @@ confirm_choice() {
             return "$VBOXDISK_E_CANCEL"
         fi
         if ((rc == 2)); then
+            close_prompt_line
             log_warn "lectura de la respuesta interrumpida"
             return "$VBOXDISK_E_CANCEL"
         fi
@@ -244,20 +327,35 @@ stage_begin() {
     bar_paint
 }
 
-# stage_end: cierra la etapa, informa su duracion y la registra en la bitacora.
-# Si la barra sigue pintada se cierra en su renglon; si un registro o una
-# pregunta la borraron, se imprime la linea plana de las salidas sin terminal.
+# stage_end [codigo]: cierra la etapa, informa su duracion y la registra en
+# la bitacora. Un codigo cero la cierra con "listo"; cualquier otro, con
+# "fallida", porque una etapa que devolvio error no se completo. Con la
+# barra pintada el cierre la reescribe en su renglon y lo cierra con salto
+# de linea, quedando el resumen debajo; sin barra (salida sin terminal) se
+# emite la linea plana con la misma distincion.
 stage_end() {
-    local dur=$(($(now_s) - VBOXDISK_STAGE_T0))
-    if ((VBOXDISK_STAGE_PAINTED == 1)); then
-        printf ' listo (%ds)\n' "$dur" >&2
+    local rc="${1:-0}" dur word
+    dur=$(($(now_s) - VBOXDISK_STAGE_T0))
+    if ((rc == 0)); then
+        word="listo"
     else
-        printf '[%d/%d] %s ... listo (%ds)\n' \
-            "$VBOXDISK_STAGE_N" "$VBOXDISK_STAGE_TOTAL" "$VBOXDISK_STAGE_NAME" "$dur" >&2
+        word="fallida"
+    fi
+    if ((VBOXDISK_STAGE_PAINTED == 1)); then
+        printf '\r\033[K%s %s (%ds)\n' \
+            "$(bar_segment)" "$word" "$dur" >&2
+    else
+        printf '[%d/%d] %s ... %s (%ds)\n' \
+            "$VBOXDISK_STAGE_N" "$VBOXDISK_STAGE_TOTAL" "$VBOXDISK_STAGE_NAME" \
+            "$word" "$dur" >&2
     fi
     VBOXDISK_STAGE_OPEN=0
     VBOXDISK_STAGE_PAINTED=0
-    log_info "etapa $VBOXDISK_STAGE_N/$VBOXDISK_STAGE_TOTAL: $VBOXDISK_STAGE_NAME completada en ${dur}s"
+    if ((rc == 0)); then
+        log_info "etapa $VBOXDISK_STAGE_N/$VBOXDISK_STAGE_TOTAL: $VBOXDISK_STAGE_NAME completada en ${dur}s"
+    else
+        log_error "etapa $VBOXDISK_STAGE_N/$VBOXDISK_STAGE_TOTAL: $VBOXDISK_STAGE_NAME fallida en ${dur}s"
+    fi
 }
 
 # Severidad de los codigos de salida: los globales 1 y 4 dominan; entre los
@@ -300,6 +398,7 @@ register_tmp() { VBOXDISK_TMP_PATHS+=("$1"); }
 # fichero de credenciales temporal) y despues destruye ese fichero en el host.
 cleanup_tmps() {
     local f
+    bar_finalize
     if declare -F vbox_guest_rm >/dev/null 2>&1; then
         vbox_guest_cleanup_all || true
     fi

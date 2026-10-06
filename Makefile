@@ -36,7 +36,7 @@ help:
 	'  lint        Ejecuta ShellCheck sobre el punto de entrada y las bibliotecas' \
 	'  test        Ejecuta las pruebas unitarias con BATS' \
 	'  install     Verifica, prueba e instala en las rutas XDG del usuario' \
-	'  uninstall   Retira el ejecutable, las bibliotecas y el bloque del PATH'
+	'  uninstall   Retira el ejecutable y las bibliotecas instalados'
 
 # checkdeps: comprueba dependencias de ejecucion y de desarrollo sin instalar nada.
 checkdeps:
@@ -84,20 +84,13 @@ install:
 	@printf 'install: bibliotecas y plantilla en %s\n' "$(DATADIR)/"
 	@printf 'install: abra una sesion nueva para usar la orden vboxdisk\n'
 
-# uninstall: retira el ejecutable, las bibliotecas y el bloque del PATH,
-# conservando state.lock, las bitacoras y vdisk.yml.
+# uninstall: retira el ejecutable y las bibliotecas, conservando el perfil
+# del usuario y state.lock, las bitacoras y vdisk.yml. El perfil (~/.bashrc,
+# ~/.zshrc) no se toca: retirar de nuevo un bloque que el usuario pudo
+# editar o que ya no pertenece a la solucion es delicado y queda en su mano.
 uninstall:
 	@rm -f "$(BINDIR)/vboxdisk"
 	@rm -rf "$(DATADIR)/lib"
 	@rm -f "$(DATADIR)/vdisk.yml.example"
-	@for rc in "$(HOME)/.bashrc" "$(HOME)/.zshrc"; do \
-		[[ -f "$$rc" ]] || continue; \
-		grep -Fq '# >>> vboxdisk >>>' "$$rc" || continue; \
-		awk '/^# >>> vboxdisk >>>$$/ { skip = 1; next } \
-			skip == 1 && /^# <<< vboxdisk <<<$$/ { skip = 0; next } \
-			skip == 0 { print }' "$$rc" >"$$rc.vboxdisk.tmp" && \
-			cat "$$rc.vboxdisk.tmp" >"$$rc" && rm -f "$$rc.vboxdisk.tmp"; \
-		printf 'uninstall: bloque del PATH retirado de %s\n' "$$rc"; \
-	done
 	@printf 'uninstall: retirado el ejecutable y las bibliotecas\n'
-	@printf 'uninstall: se conservan state.lock, las bitacoras y vdisk.yml\n'
+	@printf 'uninstall: se conservan el perfil del usuario, state.lock, las bitacoras y vdisk.yml\n'

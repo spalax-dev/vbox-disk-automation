@@ -88,14 +88,15 @@ storage_disk_attached() {
 }
 
 # storage_attachment <vm> <fichero>: imprime "<controlador> <puerto>" donde
-# esta adjunto el fichero; sin adjuncion no imprime nada.
+# esta adjunto el fichero; sin adjuncion no imprime nada. En el formato
+# legible por maquina la linea de adjuncion es "CTL-N-0"="<fichero>": la
+# clave lleva comillas, por lo que el fichero es el cuarto campo.
 storage_attachment() {
     local vm="$1" disk="$2"
     VBoxManage showvminfo "$vm" --machinereadable 2>/dev/null |
         awk -F'"' -v d="$disk" '
-            $2 == d {
-                slot = $1
-                sub(/=$/, "", slot)
+            $4 == d {
+                slot = $2
                 n = split(slot, a, "-")
                 if (n >= 2 && a[2] ~ /^[0-9]+$/) {
                     printf "%s %s", a[1], a[2]
@@ -112,19 +113,46 @@ storage_medium_uuid() {
         return 1
     fi
     slot="$(printf '%s\n' "$info" |
-        awk -F'"' -v d="$disk" '$2 == d { s = $1; sub(/=$/, "", s); print s; exit }')"
+        awk -F'"' -v d="$disk" \
+            '$4 == d && $2 ~ /^[^-]+-[0-9]+-[0-9]+$/ { print $2; exit }')"
     if [[ -z "$slot" ]]; then
         return 1
     fi
     printf '%s\n' "$info" |
         awk -F'"' -v ctl="${slot%%-*}" -v rest="${slot#*-}" \
-            '$1 == ctl "-ImageUUID-" rest "=" { print $2; exit }'
+            '$2 == ctl "-ImageUUID-" rest { print $4; exit }'
 }
 
-# storage_pick_port <vm>: imprime "<controlador> <puerto>" libres; no controlador
-# disponible retorna 3.
+# storage_ctl_index <info> <controlador>: indice numerico del controlador en
+# las claves storagecontroller<campo><indice> de showvminfo; vacio si no
+# figura.
+storage_ctl_index() {
+    printf '%s\n' "$1" | awk -F'"' -v n="$2" '
+        $0 ~ /^storagecontrollername[0-9]+=/ && $2 == n {
+            s = $1
+            sub(/^storagecontrollername/, "", s)
+            sub(/=$/, "", s)
+            print s
+            exit
+        }'
+}
+
+# storage_ctl_field <info> <campo> <indice>: valor de la clave
+# storagecontroller<campo><indice>; vacio si no existe.
+storage_ctl_field() {
+    printf '%s\n' "$1" | awk -F'"' -v f="$2" -v i="$3" \
+        '$1 == "storagecontroller" f i "=" { print $2; exit }'
+}
+
+# storage_pick_port <vm>: imprime "<controlador> <puerto>" libre; sin
+# controlador disponible retorna 3. La pertenencia de un puerto se decide
+# sobre las lineas "CTL-N-0"="medio" de showvminfo: la clave va entre
+# comillas, y una linea con valor none marca un puerto existente sin medio,
+# que por tanto esta libre. El limite superior es el maxportcount del
+# controlador, no el portcount vigente, porque un puerto aun no ampliado
+# sigue siendo un destino valido.
 storage_pick_port() {
-    local vm="$1" info ctl port count key
+    local vm="$1" info ctl idx bound port key max
     info="$(VBoxManage showvminfo "$vm" --machinereadable 2>/dev/null)" || return "$VBOXDISK_E_STORAGE"
     ctl="$(printf '%s\n' "$info" |
         awk -F'"' '/^storagecontrollername[0-9]+=/{ n = toupper($2) } n != "IDE" && /^storagecontrollername[0-9]+=/ { print $2; exit }')"
@@ -136,19 +164,47 @@ storage_pick_port() {
         log_error "$vm no tiene controladores de almacenamiento declarados"
         return "$VBOXDISK_E_STORAGE"
     fi
-    count="$(printf '%s\n' "$info" | awk -F'"' -v c="$ctl" '$1 == c "-portcount=" { print $2; exit }')"
-    if [[ -z "$count" ]]; then
-        count=30
+    bound=30
+    idx="$(storage_ctl_index "$info" "$ctl")"
+    if [[ -n "$idx" ]]; then
+        max="$(storage_ctl_field "$info" maxportcount "$idx")"
+        if [[ "$max" =~ ^[0-9]+$ ]]; then
+            bound="$max"
+        fi
     fi
-    for ((port = 0; port < count; port++)); do
+    for ((port = 0; port < bound; port++)); do
         key="$ctl-$port-0"
-        if ! printf '%s\n' "$info" | awk -F'"' -v k="$key" '$1 == k "=" { f = 1 } END { exit f ? 0 : 1 }'; then
+        if ! printf '%s\n' "$info" | awk -F'"' -v k="$key" \
+            '$2 == k && $4 != "none" { f = 1 } END { exit f ? 0 : 1 }'; then
             printf '%s %s' "$ctl" "$port"
             return 0
         fi
     done
     log_error "$vm no tiene puertos libres en el controlador $ctl"
     return "$VBOXDISK_E_STORAGE"
+}
+
+# storage_ensure_portcount <vm> <controlador> <puerto>: amplia el PortCount
+# del controlador cuando el puerto elegido queda fuera del rango vigente; el
+# hipervisor rechaza la adjuncion en un puerto inexistente. Sin dato legible
+# no se toca nada y la adjuncion decide.
+storage_ensure_portcount() {
+    local vm="$1" ctl="$2" port="$3" info idx count want out
+    info="$(VBoxManage showvminfo "$vm" --machinereadable 2>/dev/null)" || return "$VBOXDISK_E_STORAGE"
+    idx="$(storage_ctl_index "$info" "$ctl")"
+    [[ -n "$idx" ]] || return 0
+    count="$(storage_ctl_field "$info" portcount "$idx")"
+    [[ "$count" =~ ^[0-9]+$ ]] || return 0
+    ((port < count)) && return 0
+    want=$((port + 1))
+    out="$(VBoxManage storagectl "$vm" --name "$ctl" --portcount "$want" 2>&1)" || {
+        log_raw "$out"
+        log_error "$vm: no se pudo ampliar el controlador $ctl a $want puertos"
+        return "$VBOXDISK_E_STORAGE"
+    }
+    log_raw "$out"
+    log_info "$vm: controlador $ctl ampliado a $want puertos para alojar el puerto $port"
+    return 0
 }
 
 # storage_require_space <fichero> <mb>: el ancestro mas profundo existente del
@@ -178,7 +234,7 @@ storage_require_space() {
 # encendido. Retorna 0, 3 (almacenamiento) o 4 (cancelado).
 storage_ensure_medium() {
     local vm="$1" disk="$2" size_mb="$3"
-    local was_running=0 pick ctl port state
+    local was_running=0 pick ctl port state out rc
 
     if storage_disk_attached "$vm" "$disk"; then
         log_info "$vm: el disco declarado ya esta adjunto ($disk)"
@@ -200,7 +256,10 @@ storage_ensure_medium() {
         fi
         mkdir -p "$(dirname "$disk")"
         log_info "$vm: creando el disco virtual $disk (${size_mb} MB, formato VDI)"
-        if ! VBoxManage createmedium disk --filename "$disk" --size "$size_mb" --format VDI; then
+        rc=0
+        out="$(VBoxManage createmedium disk --filename "$disk" --size "$size_mb" --format VDI 2>&1)" || rc=$?
+        log_raw "$out"
+        if ((rc != 0)); then
             log_error "$vm: fallo al crear el disco virtual $disk"
             return "$VBOXDISK_E_STORAGE"
         fi
@@ -217,9 +276,15 @@ storage_ensure_medium() {
     pick="$(storage_pick_port "$vm")" || return "$?"
     ctl="${pick% *}"
     port="${pick##* }"
+    if ! storage_ensure_portcount "$vm" "$ctl" "$port"; then
+        return "$VBOXDISK_E_STORAGE"
+    fi
     log_info "$vm: adjuntando $disk en el controlador $ctl, puerto $port"
-    if ! VBoxManage storageattach "$vm" --storagectl "$ctl" \
-        --port "$port" --device 0 --type hdd --medium "$disk"; then
+    rc=0
+    out="$(VBoxManage storageattach "$vm" --storagectl "$ctl" \
+        --port "$port" --device 0 --type hdd --medium "$disk" 2>&1)" || rc=$?
+    log_raw "$out"
+    if ((rc != 0)); then
         log_error "$vm: fallo al adjuntar $disk en $ctl-$port"
         return "$VBOXDISK_E_STORAGE"
     fi
@@ -230,7 +295,7 @@ storage_ensure_medium() {
 # borrarlo. En una maquina encendida se intenta primero el desprendimiento en
 # caliente y, si el hipervisor lo rechaza, se apaga y se reintenta.
 storage_ensure_detached() {
-    local vm="$1" disk="$2" att ctl port state
+    local vm="$1" disk="$2" att ctl port state out rc
     if ! storage_disk_attached "$vm" "$disk"; then
         return 0
     fi
@@ -252,8 +317,11 @@ storage_ensure_detached() {
         vbox_stop "$vm" || true
     fi
     log_info "$vm: retirando $disk del controlador $ctl, puerto $port"
-    if ! VBoxManage storageattach "$vm" --storagectl "$ctl" \
-        --port "$port" --device 0 --medium none; then
+    rc=0
+    out="$(VBoxManage storageattach "$vm" --storagectl "$ctl" \
+        --port "$port" --device 0 --medium none 2>&1)" || rc=$?
+    log_raw "$out"
+    if ((rc != 0)); then
         log_error "$vm: fallo al desprender $disk de $ctl-$port"
         return "$VBOXDISK_E_STORAGE"
     fi
@@ -269,7 +337,7 @@ storage_ensure_detached() {
 # nada que no sea un fichero .vdi de datos, de modo que el disco del sistema
 # queda fuera del alcance de la orden.
 storage_delete_medium() {
-    local vm="$1" disk="$2" cfg
+    local vm="$1" disk="$2" cfg out rc
     if [[ "$disk" != *.vdi ]]; then
         log_error "$vm: se niega a eliminar $disk: solo se admiten ficheros .vdi de datos"
         return "$VBOXDISK_E_STORAGE"
@@ -289,7 +357,10 @@ storage_delete_medium() {
         return 0
     fi
     log_info "$vm: eliminando el disco virtual $disk"
-    if ! VBoxManage closemedium disk "$disk" --delete; then
+    rc=0
+    out="$(VBoxManage closemedium disk "$disk" --delete 2>&1)" || rc=$?
+    log_raw "$out"
+    if ((rc != 0)); then
         log_error "$vm: fallo al eliminar el disco virtual $disk"
         return "$VBOXDISK_E_STORAGE"
     fi

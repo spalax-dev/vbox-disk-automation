@@ -87,6 +87,22 @@ setup() {
     [ "$pick" = "SATA 1" ]
 }
 
+@test "storage_pick_port cuenta un puerto existente sin medio como libre" {
+    export VBOXDISK_MOCK_SATA_NONE=1
+    local pick
+    pick="$(storage_pick_port VM1)"
+    [ "$pick" = "SATA 1" ]
+}
+
+@test "storage_ensure_medium amplia el PortCount cuando el puerto queda fuera del rango" {
+    local disk="$BATS_TEST_TMPDIR/VM1-datos.vdi"
+    run storage_ensure_medium VM1 "$disk" 64
+    [ "$status" -eq 0 ]
+    # El doble nace con PortCount=1 (solo el disco del sistema): adjuntar
+    # en el puerto 1 exige ampliarlo antes, como en la maquina real.
+    grep -q '^storagectl VM1 --name SATA --portcount 2$' "$VBOXDISK_MOCK_LOG"
+}
+
 @test "la adjuncion registrada informa controlador y puerto" {
     printf '%s\n' "/no/existe/VM1-disk1.vdi" >"$VBOXDISK_MOCK_STATE"
     [ "$(storage_attachment VM1 /no/existe/VM1-disk1.vdi)" = "SATA 1" ]
