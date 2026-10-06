@@ -146,17 +146,128 @@ Las pruebas de funcionamiento verifican la solución contra las \vm{} reales del
 
 \textbf{Procedimiento.} Ejecutar \texttt{vboxdisk apply} en el \host{} sobre \texttt{vdisk.yml} y observar el avance de las cinco etapas hasta el código de salida.
 
-\textbf{Resultado esperado.} Cada uno de los dos discos queda con una tabla GPT y una partición, formateado en ext4 con la etiqueta declarada, montado en su punto de montaje (\texttt{/mnt/datos} y \texttt{/mnt/respaldo}) y con su entrada por UUID en \texttt{/etc/fstab}; la orden termina con código~0.
+\textbf{Resultado esperado.} Cada uno de los dos discos queda con una tabla GPT y una partición, formateado en ext4 con la etiqueta declarada, montado en su punto de montaje (\texttt{/mnt/disco1} y \texttt{/mnt/disco2}) y con su entrada por UUID en \texttt{/etc/fstab}; la orden termina con código~0.
 
-\textbf{Resultado obtenido.} [Pendiente]
+\textbf{Resultado obtenido.} La corrida convergió en 7\,s con código~0: los dos discos pasaron de carecer de tabla a una tabla GPT con una partición cada uno, formateados en ext4 con su etiqueta declarada, montados en \texttt{/mnt/disco1} y \texttt{/mnt/disco2} y con su entrada por UUID en \texttt{/etc/fstab}; \texttt{status} pasó de \texttt{sin estado} con \texttt{2 sin registrar} a \texttt{sincronizada} con \texttt{2 activos}. La traza directa de las órdenes, con el estado previo, la corrida completa y el estado registrado al cerrar, es la siguiente:
+
+\begin{lstlisting}[caption={Prueba~1: traza de \texttt{status} y \texttt{apply} contra \texttt{VM1}}, label={lst:prueba1}, basicstyle=\ttfamily\footnotesize, numbers=none, language={}]
+$ vboxdisk status
+MAQUINA      ESTADO           DISCOS                         DIRECCION_IP
+VM1          sin estado       2 sin registrar                192.168.1.16
+$ vboxdisk apply
+2026-10-05 21:16:30 [INFO] vboxdisk 1.0.0 - bitacora de la corrida
+2026-10-05 21:16:30 [INFO] archivo declarativo: ./vdisk.yml
+2026-10-05 21:16:30 [INFO] VM1: el disco declarado ya esta adjunto (/home/jorge/.mvs/parcial1/VM1/disk1.vdi)
+2026-10-05 21:16:31 [INFO] VM1: el disco declarado ya esta adjunto (/home/jorge/.mvs/parcial1/VM1/disk2.vdi)
+[1/5] [>                   ] verificacion declarativa de VM1 listo (1s)
+2026-10-05 21:16:31 [INFO] etapa 1/5: verificacion declarativa de VM1 completada en 1s
+[2/5] [=>                  ] disponibilidad de VM1 listo (0s)
+2026-10-05 21:16:31 [INFO] etapa 2/5: disponibilidad de VM1 completada en 0s
+2026-10-05 21:16:31 [INFO] VM1: VBoxService respondio; maquina disponible en 0s
+[3/5] [==>                 ] identificacion de la direccion IP de VM1 listo (0s)
+2026-10-05 21:16:31 [INFO] etapa 3/5: identificacion de la direccion IP de VM1 completada en 0s
+2026-10-05 21:16:31 [INFO] VM1: direccion IP identificada: 192.168.1.16
+DEVICE=/dev/sdc
+SIZE_MB=4096
+TABLE=none
+PART=
+FSTYPE=
+UUID=
+MOUNTED=no
+MOUNTPOINT=/mnt/disco1
+FSTAB=no
+TABLE_LINE=NAME SIZE FSTYPE LABEL MOUNTPOINT
+TABLE_LINE=sdc    4G
+VBOXDISK_EXIT=0
+DEVICE=/dev/sdb
+SIZE_MB=1024
+TABLE=none
+PART=
+FSTYPE=
+UUID=
+MOUNTED=no
+MOUNTPOINT=/mnt/disco2
+FSTAB=no
+TABLE_LINE=NAME SIZE FSTYPE LABEL MOUNTPOINT
+TABLE_LINE=sdb    1G
+VBOXDISK_EXIT=0
+guest_ensure: creando tabla GPT en /dev/sdc
+guest_ensure: creando ext4 en /dev/sdc1
+mke2fs 1.47.2 (1-Jan-2025)
+Creating filesystem with 1048064 4k blocks and 262144 inodes
+Filesystem UUID: f5c1f028-9546-493d-a770-2fe455c16d9a
+Superblock backups stored on blocks:
+        32768, 98304, 163840, 229376, 294912, 819200, 884736
+
+Allocating group tables: done
+Writing inode tables: done
+Creating journal (16384 blocks): done
+Writing superblocks and filesystem accounting information: done
+
+guest_ensure: entrada agregada en /etc/fstab: UUID=f5c1f028-9546-493d-a770-2fe455c16d9a /mnt/disco1 ext4 defaults 2
+guest_ensure: almacenamiento disponible en /mnt/disco1
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sdc1       3.9G  1.1M  3.7G   1% /mnt/disco1
+DEVICE=/dev/sdc
+SIZE_MB=4096
+TABLE=gpt
+PART=/dev/sdc1
+FSTYPE=ext4
+UUID=f5c1f028-9546-493d-a770-2fe455c16d9a
+MOUNTED=yes
+MOUNTPOINT=/mnt/disco1
+FSTAB=yes
+TABLE_LINE=NAME   SIZE FSTYPE LABEL     MOUNTPOINT
+TABLE_LINE=sdc      4G
+TABLE_LINE=`-sdc1   4G ext4   datos-vm1 /mnt/disco1
+VBOXDISK_EXIT=0
+guest_ensure: creando tabla GPT en /dev/sdb
+guest_ensure: creando ext4 en /dev/sdb1
+mke2fs 1.47.2 (1-Jan-2025)
+Creating filesystem with 261632 4k blocks and 65408 inodes
+Filesystem UUID: 8eb13ca0-dab2-4566-8c53-2ee9accfe38c
+Superblock backups stored on blocks:
+        32768, 98304, 163840, 229376
+
+Allocating group tables: done
+Writing inode tables: done
+Creating journal (4096 blocks): done
+Writing superblocks and filesystem accounting information: done
+
+guest_ensure: entrada agregada en /etc/fstab: UUID=8eb13ca0-dab2-4566-8c53-2ee9accfe38c /mnt/disco2 ext4 defaults 2
+guest_ensure: almacenamiento disponible en /mnt/disco2
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sdb1       988M  276K  921M   1% /mnt/disco2
+DEVICE=/dev/sdb
+SIZE_MB=1024
+TABLE=gpt
+PART=/dev/sdb1
+FSTYPE=ext4
+UUID=8eb13ca0-dab2-4566-8c53-2ee9accfe38c
+MOUNTED=yes
+MOUNTPOINT=/mnt/disco2
+FSTAB=yes
+TABLE_LINE=NAME    SIZE FSTYPE LABEL        MOUNTPOINT
+TABLE_LINE=sdb       1G
+TABLE_LINE=`-sdb1 1022M ext4   respaldo-vm1 /mnt/disco2
+VBOXDISK_EXIT=0
+[4/5] [===>                ] preparacion del almacenamiento en VM1 listo (5s)
+2026-10-05 21:16:36 [INFO] etapa 4/5: preparacion del almacenamiento en VM1 completada en 5s
+[5/5] [====>               ] verificacion y registro de VM1 listo (1s)
+2026-10-05 21:16:37 [INFO] etapa 5/5: verificacion y registro de VM1 completada en 1s
+2026-10-05 21:16:37 [INFO] VM1: convergencia verificada y registrada (disponible en 0s)
+2026-10-05 21:16:37 [INFO] resumen: tiempo total 7s; codigo de salida 0
+$ vboxdisk status
+MAQUINA      ESTADO           DISCOS                         DIRECCION_IP
+VM1          sincronizada     2 activos                      192.168.1.16
+\end{lstlisting}
 
 \textbf{Evidencia.} Bitácora de la corrida, en la ruta de la Tabla~\ref{tab:instalacion}, y capturas de \texttt{lsblk}, \texttt{findmnt} y \texttt{df -h} dentro de la \vm{}.
 
 \begin{figure}[H]
     \centering
-    % Sustituir por: \includegraphics[width=0.85\textwidth]{prueba-1.png}
-    \fbox{\parbox[c][4cm][c]{0.8\textwidth}{\centering Captura pendiente: \texttt{images/prueba-1.png}}}
-    \caption{Prueba~1: configuración inicial del almacenamiento en \texttt{VM1}}
+    \includegraphics[width=0.85\textwidth]{prueba-1.png}
+    \caption{Prueba~1: tabla de particiones de \texttt{VM1} tras la corrida, consultada desde el invitado por \texttt{ssh}}
     \label{fig:prueba1}
 \end{figure}
 
@@ -167,17 +278,157 @@ Las pruebas de funcionamiento verifican la solución contra las \vm{} reales del
 
 \textbf{Procedimiento.} Ejecutar la misma orden \texttt{vboxdisk apply} sobre el archivo declarativo, de modo que la corrida atienda a las \vm{} declaradas.
 
-\textbf{Resultado esperado.} El mismo flujo de la Prueba~1 aplicando los parámetros de \texttt{VM2}: partición formateada en xfs, montada en \texttt{/srv/datos} y con entrada por UUID en \texttt{/etc/fstab}; código~0.
+\textbf{Resultado esperado.} El mismo flujo de la Prueba~1 aplicando los parámetros de \texttt{VM2}: partición formateada en ext4 con la etiqueta declarada, montada en \texttt{/mnt/disco1} y con entrada por UUID en \texttt{/etc/fstab}; \texttt{VM1}, ya convergida, no sufre cambios y la orden termina con código~0.
 
-\textbf{Resultado obtenido.} [Pendiente]
+\textbf{Resultado obtenido.} Una sola corrida atendió a las dos \vm{}: \texttt{VM1}, ya convergida, recorrió sus cinco etapas sin modificar nada (idempotencia), y \texttt{VM2} creó su disco de 3072\,MB, confirmó el ciclo de encendido necesario para adjuntarlo y llevó su partición de \texttt{TABLE=none} a ext4 con la etiqueta \texttt{datos-vm2}, montada en \texttt{/mnt/disco1} con su entrada por UUID en \texttt{/etc/fstab}; la corrida cerró en 59\,s con código~0 y \texttt{status} reporta ambas \texttt{sincronizada}. La traza directa de la orden es la siguiente:
+
+\begin{lstlisting}[caption={Prueba~2: traza de \texttt{apply} sobre \texttt{VM1} y \texttt{VM2} y estado final con \texttt{status}}, label={lst:prueba2}, basicstyle=\ttfamily\footnotesize, numbers=none, language={}]
+$ vboxdisk apply
+2026-10-05 21:29:50 [INFO] vboxdisk 1.0.0 - bitacora de la corrida
+2026-10-05 21:29:50 [INFO] archivo declarativo: ./vdisk.yml
+2026-10-05 21:29:51 [INFO] VM1: el disco declarado ya esta adjunto (/home/jorge/.mvs/parcial1/VM1/disk1.vdi)
+2026-10-05 21:29:51 [INFO] VM1: el disco declarado ya esta adjunto (/home/jorge/.mvs/parcial1/VM1/disk2.vdi)
+[1/5] [>                   ] verificacion declarativa de VM1 listo (0s)
+2026-10-05 21:29:51 [INFO] etapa 1/5: verificacion declarativa de VM1 completada en 0s
+[2/5] [=>                  ] disponibilidad de VM1 listo (0s)
+2026-10-05 21:29:51 [INFO] etapa 2/5: disponibilidad de VM1 completada en 0s
+2026-10-05 21:29:51 [INFO] VM1: VBoxService respondio; maquina disponible en 0s
+[3/5] [==>                 ] identificacion de la direccion IP de VM1 listo (0s)
+2026-10-05 21:29:51 [INFO] etapa 3/5: identificacion de la direccion IP de VM1 completada en 0s
+2026-10-05 21:29:51 [INFO] VM1: direccion IP identificada: 192.168.1.16
+DEVICE=/dev/sdc
+SIZE_MB=4096
+TABLE=gpt
+PART=/dev/sdc1
+FSTYPE=ext4
+UUID=f5c1f028-9546-493d-a770-2fe455c16d9a
+MOUNTED=yes
+MOUNTPOINT=/mnt/disco1
+FSTAB=yes
+TABLE_LINE=NAME   SIZE FSTYPE LABEL     MOUNTPOINT
+TABLE_LINE=sdc      4G
+TABLE_LINE=`-sdc1   4G ext4   datos-vm1 /mnt/disco1
+VBOXDISK_EXIT=0
+DEVICE=/dev/sdb
+SIZE_MB=1024
+TABLE=gpt
+PART=/dev/sdb1
+FSTYPE=ext4
+UUID=8eb13ca0-dab2-4566-8c53-2ee9accfe38c
+MOUNTED=yes
+MOUNTPOINT=/mnt/disco2
+FSTAB=yes
+TABLE_LINE=NAME    SIZE FSTYPE LABEL        MOUNTPOINT
+TABLE_LINE=sdb       1G
+TABLE_LINE=`-sdb1 1022M ext4   respaldo-vm1 /mnt/disco2
+VBOXDISK_EXIT=0
+guest_ensure: montaje ya declarado y activo en /mnt/disco1
+DEVICE=/dev/sdc
+SIZE_MB=4096
+TABLE=gpt
+PART=/dev/sdc1
+FSTYPE=ext4
+UUID=f5c1f028-9546-493d-a770-2fe455c16d9a
+MOUNTED=yes
+MOUNTPOINT=/mnt/disco1
+FSTAB=yes
+TABLE_LINE=NAME   SIZE FSTYPE LABEL     MOUNTPOINT
+TABLE_LINE=sdc      4G
+TABLE_LINE=`-sdc1   4G ext4   datos-vm1 /mnt/disco1
+VBOXDISK_EXIT=0
+guest_ensure: montaje ya declarado y activo en /mnt/disco2
+DEVICE=/dev/sdb
+SIZE_MB=1024
+TABLE=gpt
+PART=/dev/sdb1
+FSTYPE=ext4
+UUID=8eb13ca0-dab2-4566-8c53-2ee9accfe38c
+MOUNTED=yes
+MOUNTPOINT=/mnt/disco2
+FSTAB=yes
+TABLE_LINE=NAME    SIZE FSTYPE LABEL        MOUNTPOINT
+TABLE_LINE=sdb       1G
+TABLE_LINE=`-sdb1 1022M ext4   respaldo-vm1 /mnt/disco2
+VBOXDISK_EXIT=0
+[4/5] [===>                ] preparacion del almacenamiento en VM1 listo (4s)
+2026-10-05 21:29:55 [INFO] etapa 4/5: preparacion del almacenamiento en VM1 completada en 4s
+[5/5] [====>               ] verificacion y registro de VM1 listo (1s)
+2026-10-05 21:29:56 [INFO] etapa 5/5: verificacion y registro de VM1 completada en 1s
+2026-10-05 21:29:56 [INFO] VM1: convergencia verificada y registrada (disponible en 0s)
+VM2 esta encendida; adjuntar /home/jorge/.mvs/parcial1/VM2/disk1.vdi exige un ciclo de encendido, detener la maquina y volver a encenderla. Continuar? [s/N] s
+2026-10-05 21:30:07 [INFO] VM2: creando el disco virtual /home/jorge/.mvs/parcial1/VM2/disk1.vdi (3072 MB, formato VDI)
+2026-10-05 21:30:07 [INFO] VM2: deteniendo la maquina para adjuntar el disco
+2026-10-05 21:30:10 [INFO] VM2: controlador SATA ampliado a 2 puertos para alojar el puerto 1
+2026-10-05 21:30:10 [INFO] VM2: adjuntando /home/jorge/.mvs/parcial1/VM2/disk1.vdi en el controlador SATA, puerto 1
+[1/5] [>                   ] verificacion declarativa de VM2 listo (14s)
+2026-10-05 21:30:10 [INFO] etapa 1/5: verificacion declarativa de VM2 completada en 14s
+2026-10-05 21:30:10 [INFO] VM2: encendiendo en modo headless
+[2/5] [=>                  ] disponibilidad de VM2 listo (15s)
+2026-10-05 21:30:25 [INFO] etapa 2/5: disponibilidad de VM2 completada en 15s
+2026-10-05 21:30:25 [INFO] VM2: VBoxService respondio; maquina disponible en 15s
+[3/5] [==>                 ] identificacion de la direccion IP de VM2 listo (20s)
+2026-10-05 21:30:45 [INFO] etapa 3/5: identificacion de la direccion IP de VM2 completada en 20s
+2026-10-05 21:30:45 [INFO] VM2: direccion IP identificada: 192.168.1.18
+DEVICE=/dev/sdb
+SIZE_MB=3072
+TABLE=none
+PART=
+FSTYPE=
+UUID=
+MOUNTED=no
+MOUNTPOINT=/mnt/disco1
+FSTAB=no
+TABLE_LINE=NAME SIZE FSTYPE LABEL MOUNTPOINT
+TABLE_LINE=sdb    3G
+VBOXDISK_EXIT=0
+guest_ensure: creando tabla GPT en /dev/sdb
+guest_ensure: creando ext4 en /dev/sdb1
+mke2fs 1.47.2 (1-Jan-2025)
+Creating filesystem with 785920 4k blocks and 196608 inodes
+Filesystem UUID: c1c9f15a-13c6-4509-874a-d5f64a4a98e4
+Superblock backups stored on blocks:
+        32768, 98304, 163840, 229376, 294912
+
+Allocating group tables: done
+Writing inode tables: done
+Creating journal (16384 blocks): done
+Writing superblocks and filesystem accounting information: done
+
+guest_ensure: entrada agregada en /etc/fstab: UUID=c1c9f15a-13c6-4509-874a-d5f64a4a98e4 /mnt/disco1 ext4 defaults 2
+guest_ensure: almacenamiento disponible en /mnt/disco1
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sdb1       2.9G  788K  2.8G   1% /mnt/disco1
+DEVICE=/dev/sdb
+SIZE_MB=3072
+TABLE=gpt
+PART=/dev/sdb1
+FSTYPE=ext4
+UUID=c1c9f15a-13c6-4509-874a-d5f64a4a98e4
+MOUNTED=yes
+MOUNTPOINT=/mnt/disco1
+FSTAB=yes
+TABLE_LINE=NAME   SIZE FSTYPE LABEL     MOUNTPOINT
+TABLE_LINE=sdb      3G
+TABLE_LINE=`-sdb1   3G ext4   datos-vm2 /mnt/disco1
+VBOXDISK_EXIT=0
+[4/5] [===>                ] preparacion del almacenamiento en VM2 listo (4s)
+2026-10-05 21:30:49 [INFO] etapa 4/5: preparacion del almacenamiento en VM2 completada en 4s
+[5/5] [====>               ] verificacion y registro de VM2 listo (0s)
+2026-10-05 21:30:49 [INFO] etapa 5/5: verificacion y registro de VM2 completada en 0s
+2026-10-05 21:30:49 [INFO] VM2: convergencia verificada y registrada (disponible en 15s)
+2026-10-05 21:30:49 [INFO] resumen: tiempo total 59s; codigo de salida 0
+$ vboxdisk status
+MAQUINA      ESTADO           DISCOS                         DIRECCION_IP
+VM1          sincronizada     2 activos                      192.168.1.16
+VM2          sincronizada     1 activo                       192.168.1.18
+\end{lstlisting}
 
 \textbf{Evidencia.} Bitácora de la corrida y capturas de \texttt{findmnt} y \texttt{lsblk} dentro de \texttt{VM2}.
 
 \begin{figure}[H]
     \centering
-    % Sustituir por: \includegraphics[width=0.85\textwidth]{prueba-2.png}
-    \fbox{\parbox[c][4cm][c]{0.8\textwidth}{\centering Captura pendiente: \texttt{images/prueba-2.png}}}
-    \caption{Prueba~2: configuración del almacenamiento en \texttt{VM2} con xfs}
+    \includegraphics[width=0.85\textwidth]{prueba-2.png}
+    \caption{Prueba~2: configuración del almacenamiento en \texttt{VM2} tras la corrida}
     \label{fig:prueba2}
 \end{figure}
 
@@ -186,19 +437,18 @@ Las pruebas de funcionamiento verifican la solución contra las \vm{} reales del
 
 \textbf{Condición inicial.} Prueba~1 completada en \texttt{VM1}.
 
-\textbf{Procedimiento.} Dentro de \texttt{VM1}, ejecutar \texttt{df -h} y \texttt{lsblk}, y crear y releer un archivo de prueba en cada punto de montaje.
+\textbf{Procedimiento.} Dentro de \texttt{VM1}, ejecutar \texttt{df -h} y \texttt{lsblk}, y crear un archivo de prueba en cada punto de montaje.
 
-\textbf{Resultado esperado.} \texttt{df -h} reporta los 4096\,MB y los 1024\,MB de los dos discos declarados y el archivo se escribe y relee sin errores.
+\textbf{Resultado esperado.} \texttt{df -h} reporta los 4096\,MB y los 1024\,MB de los dos discos declarados y los archivos se escriben sin errores.
 
-\textbf{Resultado obtenido.} [Pendiente]
+\textbf{Resultado obtenido.} Los dos puntos de montaje aceptaron la escritura: cada uno contiene diez archivos de 3,3\,MB (33\,MB en uso) y \texttt{df -h} reporta \texttt{/dev/sdc1} con 3,9\,G en \texttt{/mnt/disco1} y \texttt{/dev/sdb1} con 988\,M en \texttt{/mnt/disco2}, es decir los 4096\,MB y los 1024\,MB declarados redondeados a notación binaria.
 
 \textbf{Evidencia.} Capturas de \texttt{df -h} y de los archivos creados en los dos puntos de montaje de \texttt{VM1}.
 
 \begin{figure}[H]
     \centering
-    % Sustituir por: \includegraphics[width=0.85\textwidth]{prueba-3.png}
-    \fbox{\parbox[c][4cm][c]{0.8\textwidth}{\centering Captura pendiente: \texttt{images/prueba-3.png}}}
-    \caption{Prueba~3: capacidad disponible y archivo de prueba en \texttt{VM1}}
+    \includegraphics[width=0.85\textwidth]{prueba-3.png}
+    \caption{Prueba~3: capacidad disponible y archivos de prueba en los dos puntos de montaje de \texttt{VM1}}
     \label{fig:prueba3}
 \end{figure}
 
@@ -209,16 +459,15 @@ Las pruebas de funcionamiento verifican la solución contra las \vm{} reales del
 
 \textbf{Procedimiento.} Reiniciar \texttt{VM1} y verificar el estado del montaje después del arranque, sin ejecutar la solución.
 
-\textbf{Resultado esperado.} \texttt{/mnt/datos} aparece montado automáticamente gracias a la entrada por UUID de \texttt{/etc/fstab}, sin ninguna intervención.
+\textbf{Resultado esperado.} \texttt{/mnt/disco1} y \texttt{/mnt/disco2} aparecen montados automáticamente gracias a la entrada por UUID de \texttt{/etc/fstab}, sin ninguna intervención.
 
-\textbf{Resultado obtenido.} [Pendiente]
+\textbf{Resultado obtenido.} Tras \texttt{sudo reboot} y una nueva sesión por \texttt{ssh}, sin ejecutar la solución, los archivos escritos en la Prueba~3 siguen visibles en los dos puntos de montaje: \texttt{/etc/fstab} volvió a montar \texttt{/dev/sdc1} en \texttt{/mnt/disco1} y \texttt{/dev/sdb1} en \texttt{/mnt/disco2} automáticamente.
 
-\textbf{Evidencia.} Capturas de \texttt{findmnt} y \texttt{df -h} después del reinicio.
+\textbf{Evidencia.} Captura de la sesión posterior al reinicio con el listado de los dos puntos de montaje.
 
 \begin{figure}[H]
     \centering
-    % Sustituir por: \includegraphics[width=0.85\textwidth]{prueba-4.png}
-    \fbox{\parbox[c][4cm][c]{0.8\textwidth}{\centering Captura pendiente: \texttt{images/prueba-4.png}}}
+    \includegraphics[width=0.85\textwidth]{prueba-4.png}
     \caption{Prueba~4: montaje automático tras el reinicio de \texttt{VM1}}
     \label{fig:prueba4}
 \end{figure}
@@ -226,49 +475,227 @@ Las pruebas de funcionamiento verifican la solución contra las \vm{} reales del
 \subsubsection{Prueba 5: Re-ejecución sobre VM Configurada}
 \label{subsub:prueba5}
 
-\textbf{Condición inicial.} \texttt{VM1} ya configurada, con un archivo persistido en \texttt{/mnt/datos}.
+\textbf{Condición inicial.} \texttt{VM1} ya configurada, con archivos persistidos en los dos puntos de montaje desde la Prueba~3.
 
-\textbf{Procedimiento.} Ejecutar de nuevo \texttt{vboxdisk apply} sobre \texttt{VM1} y comparar el estado antes y después de la corrida.
+\textbf{Procedimiento.} Ejecutar de nuevo \texttt{vboxdisk apply} sobre el archivo declarativo, con ambas \vm{} ya configuradas, y comparar el estado antes y después de la corrida.
 
-\textbf{Resultado esperado.} Código~0 sin reformatear ninguno de los dos discos, sin duplicar entradas en \texttt{fstab} y con el archivo de datos intacto.
+\textbf{Resultado esperado.} Código~0 sin reformatear ninguno de los discos declarados, sin duplicar entradas en \texttt{fstab} y con los archivos de datos intactos.
 
-\textbf{Resultado obtenido.} [Pendiente]
+\textbf{Resultado obtenido.} La segunda corrida, sobre ambas \vm{} ya convergidas, recorrió las diez etapas sin reformatear nada: cada disco se reporta \emph{ya adjunto}, cada montaje \emph{ya declarado y activo}, los UUID se repiten idénticos a la corrida inicial y \texttt{fstab} se mantiene con una sola entrada por disco; como no hay reformato, los archivos de las pruebas anteriores quedan intactos. La corrida cerró en 11\,s con código~0. La traza directa es la siguiente:
 
-\textbf{Evidencia.} Bitácora de la segunda corrida y comparación de \texttt{blkid} y de \texttt{/etc/fstab} antes y después.
+\begin{lstlisting}[caption={Prueba~5: segunda corrida de \texttt{apply} sobre ambas \vm{} ya configuradas}, label={lst:prueba5}, basicstyle=\ttfamily\footnotesize, numbers=none, language={}]
+$ vboxdisk apply
+2026-10-05 22:21:52 [INFO] vboxdisk 1.0.0 - bitacora de la corrida
+2026-10-05 22:21:52 [INFO] archivo declarativo: ./vdisk.yml
+2026-10-05 22:21:53 [INFO] VM1: el disco declarado ya esta adjunto (/home/jorge/.mvs/parcial1/VM1/disk1.vdi)
+2026-10-05 22:21:53 [INFO] VM1: el disco declarado ya esta adjunto (/home/jorge/.mvs/parcial1/VM1/disk2.vdi)
+[1/5] [>                   ] verificacion declarativa de VM1 listo (0s)
+2026-10-05 22:21:53 [INFO] etapa 1/5: verificacion declarativa de VM1 completada en 0s
+[2/5] [=>                  ] disponibilidad de VM1 listo (0s)
+2026-10-05 22:21:53 [INFO] etapa 2/5: disponibilidad de VM1 completada en 0s
+2026-10-05 22:21:53 [INFO] VM1: VBoxService respondio; maquina disponible en 0s
+[3/5] [==>                 ] identificacion de la direccion IP de VM1 listo (0s)
+2026-10-05 22:21:53 [INFO] etapa 3/5: identificacion de la direccion IP de VM1 completada en 0s
+2026-10-05 22:21:53 [INFO] VM1: direccion IP identificada: 192.168.1.16
+DEVICE=/dev/sdc
+SIZE_MB=4096
+TABLE=gpt
+PART=/dev/sdc1
+FSTYPE=ext4
+UUID=f5c1f028-9546-493d-a770-2fe455c16d9a
+MOUNTED=yes
+MOUNTPOINT=/mnt/disco1
+FSTAB=yes
+TABLE_LINE=NAME   SIZE FSTYPE LABEL     MOUNTPOINT
+TABLE_LINE=sdc      4G
+TABLE_LINE=`-sdc1   4G ext4   datos-vm1 /mnt/disco1
+VBOXDISK_EXIT=0
+DEVICE=/dev/sdb
+SIZE_MB=1024
+TABLE=gpt
+PART=/dev/sdb1
+FSTYPE=ext4
+UUID=8eb13ca0-dab2-4566-8c53-2ee9accfe38c
+MOUNTED=yes
+MOUNTPOINT=/mnt/disco2
+FSTAB=yes
+TABLE_LINE=NAME    SIZE FSTYPE LABEL        MOUNTPOINT
+TABLE_LINE=sdb       1G
+TABLE_LINE=`-sdb1 1022M ext4   respaldo-vm1 /mnt/disco2
+VBOXDISK_EXIT=0
+guest_ensure: montaje ya declarado y activo en /mnt/disco1
+DEVICE=/dev/sdc
+SIZE_MB=4096
+TABLE=gpt
+PART=/dev/sdc1
+FSTYPE=ext4
+UUID=f5c1f028-9546-493d-a770-2fe455c16d9a
+MOUNTED=yes
+MOUNTPOINT=/mnt/disco1
+FSTAB=yes
+TABLE_LINE=NAME   SIZE FSTYPE LABEL     MOUNTPOINT
+TABLE_LINE=sdc      4G
+TABLE_LINE=`-sdc1   4G ext4   datos-vm1 /mnt/disco1
+VBOXDISK_EXIT=0
+guest_ensure: montaje ya declarado y activo en /mnt/disco2
+DEVICE=/dev/sdb
+SIZE_MB=1024
+TABLE=gpt
+PART=/dev/sdb1
+FSTYPE=ext4
+UUID=8eb13ca0-dab2-4566-8c53-2ee9accfe38c
+MOUNTED=yes
+MOUNTPOINT=/mnt/disco2
+FSTAB=yes
+TABLE_LINE=NAME    SIZE FSTYPE LABEL        MOUNTPOINT
+TABLE_LINE=sdb       1G
+TABLE_LINE=`-sdb1 1022M ext4   respaldo-vm1 /mnt/disco2
+VBOXDISK_EXIT=0
+[4/5] [===>                ] preparacion del almacenamiento en VM1 listo (5s)
+2026-10-05 22:21:58 [INFO] etapa 4/5: preparacion del almacenamiento en VM1 completada en 5s
+[5/5] [====>               ] verificacion y registro de VM1 listo (1s)
+2026-10-05 22:21:59 [INFO] etapa 5/5: verificacion y registro de VM1 completada en 1s
+2026-10-05 22:21:59 [INFO] VM1: convergencia verificada y registrada (disponible en 0s)
+2026-10-05 22:22:00 [INFO] VM2: el disco declarado ya esta adjunto (/home/jorge/.mvs/parcial1/VM2/disk1.vdi)
+[1/5] [>                   ] verificacion declarativa de VM2 listo (1s)
+2026-10-05 22:22:00 [INFO] etapa 1/5: verificacion declarativa de VM2 completada en 1s
+[2/5] [=>                  ] disponibilidad de VM2 listo (0s)
+2026-10-05 22:22:00 [INFO] etapa 2/5: disponibilidad de VM2 completada en 0s
+2026-10-05 22:22:00 [INFO] VM2: VBoxService respondio; maquina disponible en 0s
+[3/5] [==>                 ] identificacion de la direccion IP de VM2 listo (0s)
+2026-10-05 22:22:00 [INFO] etapa 3/5: identificacion de la direccion IP de VM2 completada en 0s
+2026-10-05 22:22:00 [INFO] VM2: direccion IP identificada: 192.168.1.18
+DEVICE=/dev/sdb
+SIZE_MB=3072
+TABLE=gpt
+PART=/dev/sdb1
+FSTYPE=ext4
+UUID=c1c9f15a-13c6-4509-874a-d5f64a4a98e4
+MOUNTED=yes
+MOUNTPOINT=/mnt/disco1
+FSTAB=yes
+TABLE_LINE=NAME   SIZE FSTYPE LABEL     MOUNTPOINT
+TABLE_LINE=sdb      3G
+TABLE_LINE=`-sdb1   3G ext4   datos-vm2 /mnt/disco1
+VBOXDISK_EXIT=0
+guest_ensure: montaje ya declarado y activo en /mnt/disco1
+DEVICE=/dev/sdb
+SIZE_MB=3072
+TABLE=gpt
+PART=/dev/sdb1
+FSTYPE=ext4
+UUID=c1c9f15a-13c6-4509-874a-d5f64a4a98e4
+MOUNTED=yes
+MOUNTPOINT=/mnt/disco1
+FSTAB=yes
+TABLE_LINE=NAME   SIZE FSTYPE LABEL     MOUNTPOINT
+TABLE_LINE=sdb      3G
+TABLE_LINE=`-sdb1   3G ext4   datos-vm2 /mnt/disco1
+VBOXDISK_EXIT=0
+[4/5] [===>                ] preparacion del almacenamiento en VM2 listo (2s)
+2026-10-05 22:22:02 [INFO] etapa 4/5: preparacion del almacenamiento en VM2 completada en 2s
+[5/5] [====>               ] verificacion y registro de VM2 listo (1s)
+2026-10-05 22:22:03 [INFO] etapa 5/5: verificacion y registro de VM2 completada en 1s
+2026-10-05 22:22:03 [INFO] VM2: convergencia verificada y registrada (disponible en 0s)
+2026-10-05 22:22:03 [INFO] resumen: tiempo total 11s; codigo de salida 0
+\end{lstlisting}
+
+\textbf{Evidencia.} Bitácora de la segunda corrida, en la que los UUID y la entrada de \texttt{fstab} se repiten sin cambios respecto de la corrida inicial.
 
 \begin{figure}[H]
     \centering
-    % Sustituir por: \includegraphics[width=0.85\textwidth]{prueba-5.png}
-    \fbox{\parbox[c][4cm][c]{0.8\textwidth}{\centering Captura pendiente: \texttt{images/prueba-5.png}}}
-    \caption{Prueba~5: re-ejecución idempotente sobre \texttt{VM1} con datos persistidos}
+    \includegraphics[width=0.85\textwidth]{prueba-5.png}
+    \caption{Prueba~5: segunda corrida de \texttt{apply} sobre ambas \vm{} ya configuradas}
     \label{fig:prueba5}
 \end{figure}
 
 \subsubsection{Prueba 6: Condición que Impide la Ejecución Normal}
 \label{subsub:prueba6}
 
-\textbf{Condición inicial.} \texttt{VM1} encendida con el adaptador en modo puente desconectado, de modo que no puede obtener dirección IP.
+\textbf{Condición inicial.} \texttt{VM1} encendida con el adaptador en modo puente desconectado y sin entrada ARP para la \vm{} en el host, de modo que no puede obtener dirección IP.
 
-\textbf{Procedimiento.} Ejecutar \texttt{vboxdisk apply} sobre \texttt{VM1} y agotar los reintentos de identificación de dirección.
+\textbf{Procedimiento.} Ejecutar \texttt{vboxdisk apply} sobre el archivo declarativo con esa condición y agotar los reintentos de identificación de dirección de \texttt{VM1}.
 
-\textbf{Resultado esperado.} Mensaje claro de dirección IP no disponible en \texttt{stderr}, código~2 y almacenamiento sin modificar.
+\textbf{Resultado esperado.} Mensaje claro de dirección IP no disponible en \texttt{stderr}, corrida que cierra con código~2 y almacenamiento de \texttt{VM1} sin modificar.
 
-\textbf{Resultado obtenido.} [Pendiente]
+\textbf{Resultado obtenido.} La etapa~3 de \texttt{VM1} agotó los 60\,s de reintentos y registró el error en \texttt{stderr}; \texttt{VM1} no llegó a la etapa~4, de modo que su almacenamiento quedó intacto. La corrida continuó con \texttt{VM2}, que converge normalmente, y el resumen cerró en 65\,s con código~2. La traza, incluida la preparación de la condición, es la siguiente:
 
-\textbf{Evidencia.} Bitácora de la corrida y captura del mensaje de error.
+\begin{lstlisting}[caption={Prueba~6: corrida con \texttt{VM1} sin IP: reintentos agotados y cierre con código~2}, label={lst:prueba6}, basicstyle=\ttfamily\footnotesize, numbers=none, language={}]
+$ vboxmanage controlvm VM1 setlinkstate1 off
+$ vboxmanage showvminfo VM1 --machinereadable | grep cableconnected1
+cableconnected1="off"
+$ sudo ip neigh flush dev wlo1
+[sudo] password for jorge:
+$ vboxdisk apply
+2026-10-05 22:49:04 [INFO] vboxdisk 1.0.0 - bitacora de la corrida
+2026-10-05 22:49:04 [INFO] archivo declarativo: ./vdisk.yml
+2026-10-05 22:49:05 [INFO] VM1: el disco declarado ya esta adjunto (/home/jorge/.mvs/parcial1/VM1/disk1.vdi)
+2026-10-05 22:49:05 [INFO] VM1: el disco declarado ya esta adjunto (/home/jorge/.mvs/parcial1/VM1/disk2.vdi)
+[1/5] [>                   ] verificacion declarativa de VM1 listo (1s)
+2026-10-05 22:49:05 [INFO] etapa 1/5: verificacion declarativa de VM1 completada en 1s
+[2/5] [=>                  ] disponibilidad de VM1 listo (0s)
+2026-10-05 22:49:05 [INFO] etapa 2/5: disponibilidad de VM1 completada en 0s
+2026-10-05 22:49:05 [INFO] VM1: VBoxService respondio; maquina disponible en 0s
+[3/5] [==>                 ] identificacion de la direccion IP de VM1 fallida (60s)
+2026-10-05 22:50:05 [ERROR] etapa 3/5: identificacion de la direccion IP de VM1 fallida en 60s
+2026-10-05 22:50:05 [ERROR] VM1: direccion IP no disponible tras 60s (propiedad de Guest Additions y respaldo ARP)
+2026-10-05 22:50:05 [INFO] VM2: el disco declarado ya esta adjunto (/home/jorge/.mvs/parcial1/VM2/disk1.vdi)
+[1/5] [>                   ] verificacion declarativa de VM2 listo (0s)
+2026-10-05 22:50:05 [INFO] etapa 1/5: verificacion declarativa de VM2 completada en 0s
+[2/5] [=>                  ] disponibilidad de VM2 listo (1s)
+2026-10-05 22:50:06 [INFO] etapa 2/5: disponibilidad de VM2 completada en 1s
+2026-10-05 22:50:06 [INFO] VM2: VBoxService respondio; maquina disponible en 1s
+[3/5] [==>                 ] identificacion de la direccion IP de VM2 listo (0s)
+2026-10-05 22:50:06 [INFO] etapa 3/5: identificacion de la direccion IP de VM2 completada en 0s
+2026-10-05 22:50:06 [INFO] VM2: direccion IP identificada: 192.168.1.18
+DEVICE=/dev/sdb
+SIZE_MB=3072
+TABLE=gpt
+PART=/dev/sdb1
+FSTYPE=ext4
+UUID=c1c9f15a-13c6-4509-874a-d5f64a4a98e4
+MOUNTED=yes
+MOUNTPOINT=/mnt/disco1
+FSTAB=yes
+TABLE_LINE=NAME   SIZE FSTYPE LABEL     MOUNTPOINT
+TABLE_LINE=sdb      3G
+TABLE_LINE=`-sdb1   3G ext4   datos-vm2 /mnt/disco1
+VBOXDISK_EXIT=0
+guest_ensure: montaje ya declarado y activo en /mnt/disco1
+DEVICE=/dev/sdb
+SIZE_MB=3072
+TABLE=gpt
+PART=/dev/sdb1
+FSTYPE=ext4
+UUID=c1c9f15a-13c6-4509-874a-d5f64a4a98e4
+MOUNTED=yes
+MOUNTPOINT=/mnt/disco1
+FSTAB=yes
+TABLE_LINE=NAME   SIZE FSTYPE LABEL     MOUNTPOINT
+TABLE_LINE=sdb      3G
+TABLE_LINE=`-sdb1   3G ext4   datos-vm2 /mnt/disco1
+VBOXDISK_EXIT=0
+[4/5] [===>                ] preparacion del almacenamiento en VM2 listo (2s)
+2026-10-05 22:50:08 [INFO] etapa 4/5: preparacion del almacenamiento en VM2 completada en 2s
+[5/5] [====>               ] verificacion y registro de VM2 listo (1s)
+2026-10-05 22:50:09 [INFO] etapa 5/5: verificacion y registro de VM2 completada en 1s
+2026-10-05 22:50:09 [INFO] VM2: convergencia verificada y registrada (disponible en 1s)
+2026-10-05 22:50:09 [INFO] resumen: tiempo total 65s; codigo de salida 2
+\end{lstlisting}
+
+\textbf{Evidencia.} Bitácora de la corrida con el mensaje de error y captura del almacenamiento de \texttt{VM1} sin cambios tras el fallo.
 
 \begin{figure}[H]
     \centering
-    % Sustituir por: \includegraphics[width=0.85\textwidth]{prueba-6.png}
-    \fbox{\parbox[c][4cm][c]{0.8\textwidth}{\centering Captura pendiente: \texttt{images/prueba-6.png}}}
-    \caption{Prueba~6: fallo controlado por dirección IP no disponible}
+    \includegraphics[width=0.85\textwidth]{prueba-6.png}
+    \caption{Prueba~6: almacenamiento de \texttt{VM1} intacto tras la corrida fallida}
     \label{fig:prueba6}
 \end{figure}
 
 \subsection{Tiempo de Ejecución}
 \label{sub:tiempo}
 
-El tiempo de ejecución se mide con los dos cronómetros que la solución imprime en cada corrida, descritos en la Subsección~\ref{sub:cli}: el primero registra el intervalo entre el encendido de la \vm{} y el momento en que \texttt{VBoxService} responde, es decir, en que la máquina queda disponible para recibir las órdenes de configuración, y el segundo cubre la corrida completa hasta la verificación final. Ambos quedan en la bitácora con la marca de tiempo de cada etapa, por lo que varias corridas pueden compararse sin instrumentación adicional. La Tabla~\ref{tab:tiempos} reúne las mediciones de tres corridas consecutivas sobre \texttt{VM1}; la columna de condiciones registra el estado inicial de la \vm{}, que es la principal fuente de variación, pues una corrida fría incluye el arranque completo del sistema invitado.
+El tiempo de ejecución se mide con los dos cronómetros que la solución imprime en cada corrida, descritos en la Subsección~\ref{sub:cli}: el primero registra el intervalo entre el encendido de la \vm{} y el momento en que \texttt{VBoxService} responde, es decir, en que la máquina queda disponible para recibir las órdenes de configuración, y el segundo cubre la corrida completa hasta la verificación final. Ambos quedan en la bitácora con la marca de tiempo de cada etapa, por lo que varias corridas pueden compararse sin instrumentación adicional; la columna \emph{Disponible} de la Tabla~\ref{tab:tiempos} cuenta desde la primera línea de la bitácora hasta que la \vm{} responde. La tabla reúne tres corridas consecutivas; la columna de condiciones registra el estado inicial, que es la principal fuente de variación, pues una corrida fría incluye la creación y el adjuntado del disco y el arranque completo del sistema invitado.
 
 \begin{table}[H]
     \centering
@@ -278,12 +705,14 @@ El tiempo de ejecución se mide con los dos cronómetros que la solución imprim
         \toprule
         \textbf{Corrida} & \textbf{Condiciones} & \textbf{Disponible (s)} & \textbf{Total (s)} & \textbf{Observaciones} \\
         \midrule
-        1 & VM1 apagada al iniciar & [Pendiente] & [Pendiente] & [Pendiente] \\
-        2 & VM1 apagada al iniciar & [Pendiente] & [Pendiente] & [Pendiente] \\
-        3 & VM1 encendida al iniciar & [Pendiente] & [Pendiente] & [Pendiente] \\
+        1 & \texttt{VM1} encendida; almacenamiento sin configurar & 1 (\texttt{VM1}) & 7 & Primera corrida, con una sola \vm{} en el archivo: crea GPT y ext4 en los dos discos \\
+        2 & \texttt{VM2} apagada y sin disco; \texttt{VM1} encendida & 35 (\texttt{VM2}) & 59 & Incluye la creación del VDI, el ciclo de encendido y 15\,s de arranque de \texttt{VM2}; \texttt{VM1} disponible en 1\,s \\
+        3 & Ambas \vm{} encendidas y ya configuradas & 1 (\texttt{VM1}) & 11 & Re-ejecución idempotente sobre las dos \vm{}; \texttt{VM2} disponible en 8\,s \\
         \bottomrule
     \end{tabular}
 \end{table}
+
+\textbf{Análisis.} Las corridas con la \vm{} encendida llegan a la disponibilidad en 1\,s y concentran su tiempo en la configuración (7 a 11\,s); la corrida~2, con \texttt{VM2} apagada, tarda 35\,s en ponerla disponible —la creación y el adjuntado del disco, más los 15\,s de arranque una vez encendida— y 59\,s en total. Entre las corridas calientes~1 y~3 la diferencia se explica por el alcance: la~1 procesó una sola \vm{} y la~3, dos. Como contraste, la corrida fallida de la Prueba~6 cerró en 65\,s, dominada por los 60\,s de reintentos de identificación de dirección IP y no por el arranque.
 
 
 
