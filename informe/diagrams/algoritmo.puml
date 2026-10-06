@@ -18,7 +18,7 @@ endif
 |#FFF8E1|Sistema invitado|
 :Identificar el disco declarado por su etiqueta o por su tamaño con lsblk;
 if (¿Disco identificado sin\ntabla de particiones?) then (sí)
-  :parted: GPT con 1 partición;
+  :sfdisk: GPT con 1 partición;
 else (no)
 endif
 if (¿Sin sistema de archivos?) then (sí)

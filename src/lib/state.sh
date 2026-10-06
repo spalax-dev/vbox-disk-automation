@@ -18,25 +18,46 @@
 # state.sh: state.lock (una entrada por vm) y bitacoras por ejecucion de apply.
 # Rutas segun las variables XDG; state.lock no se instala ni se elimina.
 
-# Rutas XDG por defecto; VBOXDISK_STATE_DIR las sobreescribe (usado en pruebas).
+# @description Directorio de estado de vboxdisk.
+# Precedencia: VBOXDISK_STATE_DIR (usado en pruebas) > $XDG_DATA_HOME/vboxdisk
+# > ~/.local/share/vboxdisk.
+# @noargs
+# @stdout La ruta, sin salto de línea.
 state_dir() {
     printf '%s' "${VBOXDISK_STATE_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/vboxdisk}"
 }
 
+# @description Ruta completa del fichero de bloqueo state.lock (una entrada por vm).
+# @noargs
+# @stdout La ruta, sin salto de línea.
+# @see state_dir()
 state_lock_file() {
     printf '%s/state.lock' "$(state_dir)"
 }
 
+# @description Directorio de las bitácoras por ejecución de apply.
+# @noargs
+# @stdout La ruta, sin salto de línea.
+# @see state_dir()
 state_log_dir() {
     printf '%s/state' "$(state_dir)"
 }
 
-# state_init_dirs: crea el directorio de estado y el de bitacoras.
+# @description Crea el directorio de estado y el de bitácoras si aún no existen.
+# @noargs
+# @exitcode 0 Directorios creados o ya existentes.
+# @exitcode 1 mkdir no pudo crearlos.
 state_init_dirs() {
     mkdir -p "$(state_dir)" "$(state_log_dir)"
 }
 
-# state_get <vm> <clave>: imprime el valor; retorna 1 si no existe.
+# @description Lee una clave de la sección de una vm en state.lock.
+# @arg $1 string Nombre de la vm.
+# @arg $2 string Clave; las anidadas se escriben con puntos (p. ej. disks.data0.size).
+# @stdout El valor de la clave, sin salto de línea.
+# @exitcode 0 La clave existe.
+# @exitcode 1 La clave no existe o no hay state.lock.
+# @see state_get_disk()
 state_get() {
     local vm="$1" key="$2" lock
     lock="$(state_lock_file)"
@@ -55,12 +76,22 @@ state_get() {
     ' "$lock"
 }
 
-# state_get_disk <vm> <disco> <clave>: clave anidada disks.<disco>.<clave>.
+# @description Lee una clave anidada de un disco: disks.<disco>.<clave>.
+# @arg $1 string Nombre de la vm.
+# @arg $2 string Clave del disco.
+# @arg $3 string Clave dentro del disco (p. ej. size, table_b64).
+# @stdout El valor de la clave, sin salto de línea.
+# @exitcode 0 La clave existe.
+# @exitcode 1 La clave no existe o no hay state.lock.
+# @see state_get()
 state_get_disk() {
     state_get "$1" "disks.$2.$3"
 }
 
-# state_disk_keys <vm>: discos registrados de la maquina, en orden de registro.
+# @description Enumera los discos registrados de la vm, en orden de registro.
+# @arg $1 string Nombre de la vm.
+# @stdout Un nombre de disco por línea; vacío si no hay state.lock ni discos.
+# @exitcode 0 Siempre.
 state_disk_keys() {
     local vm="$1" lock
     lock="$(state_lock_file)"
@@ -78,7 +109,10 @@ state_disk_keys() {
     ' "$lock"
 }
 
-# state_vms: maquinas con seccion en state.lock, en orden de registro.
+# @description Enumera las máquinas con sección en state.lock, en orden de registro.
+# @noargs
+# @stdout Un nombre de vm por línea; vacío si no hay state.lock.
+# @exitcode 0 Siempre.
 state_vms() {
     local lock
     lock="$(state_lock_file)"
@@ -88,7 +122,14 @@ state_vms() {
     awk '/^\[/ { sub(/^\[/, ""); sub(/\]$/, ""); print }' "$lock"
 }
 
-# state_set_vm <vm> <clave=valor>...  Reescribe o anade la entrada completa.
+# @description Reescribe o crea la sección completa de una vm en state.lock con
+# las claves recibidas.
+# La sección anterior se elimina por completo: las claves no incluidas se
+# pierden. Si la vm no tenía sección, esta se añade al final del fichero.
+# @arg $1 string Nombre de la vm.
+# @arg $@ string Pares 'clave=valor' que compondrán la sección, desde $2.
+# @exitcode 0 Sección reescrita.
+# @see state_update_vm()
 state_set_vm() {
     local vm="$1"
     shift
@@ -112,10 +153,15 @@ state_set_vm() {
     mv "$tmp" "$lock"
 }
 
-# state_update_vm <vm> <clave=valor>...  Fusiona con la entrada existente: las
-# claves recibidas se actualizan o se anaden al final y el resto de la seccion
-# se conserva tal cual, de modo que los discos no afectados por la corrida no
-# pierden su registro.
+# @description Fusiona claves en la sección de una vm sin tocar el resto.
+# Las claves recibidas se actualizan o se añaden al final; las ya existentes
+# conservan su posición original y el resto de la sección se conserva tal
+# cual, de modo que los discos no afectados por la corrida no pierden su
+# registro. Difiere de state_set_vm(), que reescribe la sección entera.
+# @arg $1 string Nombre de la vm.
+# @arg $@ string Pares 'clave=valor' a fusionar, desde $2; los que no contienen '=' se ignoran.
+# @exitcode 0 Sección actualizada.
+# @see state_set_vm()
 state_update_vm() {
     local vm="$1"
     shift
@@ -167,9 +213,13 @@ state_update_vm() {
     mv "$tmp" "$lock"
 }
 
-# state_remove_prefix <vm> <prefijo>: retira de la seccion de la maquina todas
-# las claves que empiezan por el prefijo; una seccion que queda vacia se borra
-# por completo.
+# @description Retira de la sección de la vm todas las claves que empiezan por
+# un prefijo; una sección que queda vacía se borra por completo.
+# Si no hay state.lock no hace nada.
+# @arg $1 string Nombre de la vm.
+# @arg $2 string Prefijo de las claves a eliminar (p. ej. disks.data0.).
+# @exitcode 0 Operación completada.
+# @see state_remove_disk()
 state_remove_prefix() {
     local vm="$1" prefix="$2" lock tmp
     lock="$(state_lock_file)"
@@ -200,12 +250,19 @@ state_remove_prefix() {
     mv "$tmp" "$lock"
 }
 
-# state_remove_disk <vm> <disco>: retira el registro completo de un disco.
+# @description Retira el registro completo de un disco de la vm.
+# @arg $1 string Nombre de la vm.
+# @arg $2 string Clave del disco.
+# @exitcode 0 Operación completada.
+# @see state_remove_prefix()
 state_remove_disk() {
     state_remove_prefix "$1" "disks.$2."
 }
 
-# state_remove_vm <vm>: retira la seccion completa de la maquina.
+# @description Retira la sección completa de la vm de state.lock.
+# Si la vm no tiene sección o no hay state.lock, no hace nada.
+# @arg $1 string Nombre de la vm.
+# @exitcode 0 Operación completada.
 state_remove_vm() {
     local vm="$1" lock tmp
     lock="$(state_lock_file)"
@@ -221,8 +278,13 @@ state_remove_vm() {
     mv "$tmp" "$lock"
 }
 
-# state_table_b64 <vm> <disco>: tabla de particiones registrada de un disco,
-# ya decodificada.
+# @description Devuelve ya decodificada la tabla de particiones registrada de un disco.
+# @arg $1 string Nombre de la vm.
+# @arg $2 string Clave del disco.
+# @stdout La tabla de particiones en texto plano, con sus saltos de línea.
+# @exitcode 0 La tabla se decodificó.
+# @exitcode 1 El disco no tiene tabla registrada o el base64 no es válido.
+# @see state_encode_table()
 state_table_b64() {
     local b64
     b64="$(state_get_disk "$1" "$2" table_b64 || true)"
@@ -232,12 +294,24 @@ state_table_b64() {
     printf '%s' "$b64" | base64 -d
 }
 
-# state_encode_table: tabla en base64 sin saltos, para una sola clave del lock.
+# @description Codifica una tabla en base64 sin saltos de línea, para guardarla
+# como una sola clave del lock.
+# @arg $1 string Tabla de particiones en texto plano.
+# @stdout La tabla en base64, en una sola línea.
+# @see state_table_b64()
 state_encode_table() {
     printf '%s' "$1" | base64 -w0
 }
 
-# state_open_log: una bitacora plana por ejecucion de apply.
+# @description Crea y abre una bitácora plana por ejecución de apply, con el
+# directorio de bitácoras creado si falta.
+# El nombre del fichero es la fecha y hora local con formato
+# AAAAmmdd-HHMMSS.log. Después escribe la cabecera de la corrida.
+# @noargs
+# @set VBOXDISK_LOG_FILE string Ruta del fichero de bitácora recién creado.
+# @stderr log_error si la bitácora no se pudo crear; después las cabeceras con log_info.
+# @exitcode 0 Bitácora creada y registrada.
+# @exitcode 1 No se pudo crear el fichero de bitácora.
 state_open_log() {
     local dir f
     dir="$(state_log_dir)"

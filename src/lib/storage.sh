@@ -18,21 +18,31 @@
 # storage.sh: verificacion declarativa, huellas en el host, preparacion y
 # retiro de discos, y lectura de la salida clave=valor del script invitado.
 
-# storage_desired_hash <vm>: sha256 del bloque declarado convertido a JSON,
-# la referencia contra la que se compara el estado registrado.
+# @description sha256 del bloque declarado de la vm convertido a JSON: la
+# referencia contra la que se compara el estado registrado en state.lock.
+# @arg $1 string Nombre de la vm en el archivo declarativo.
+# @stdout sha256 en hexadecimal de 64 caracteres, con salto de linea.
 storage_desired_hash() {
     yq -o=json ".\"${1}\"" "$VBOXDISK_FILE" | sha256sum | awk '{ print $1 }'
 }
 
-# storage_disk_desired_hash <vm> <disco>: sha256 del disco declarado, para
-# comparar un disco concreto con su registro en state.lock.
+# @description sha256 del bloque de un disco declarado, para comparar ese disco
+# concreto con su registro en state.lock.
+# @arg $1 string Nombre de la vm en el archivo declarativo.
+# @arg $2 string Clave del disco bajo la vm (nombre del nodo en 'disks').
+# @stdout sha256 en hexadecimal de 64 caracteres, con salto de linea.
 storage_disk_desired_hash() {
     yq -o=json ".\"${1}\".disks.\"${2}\"" "$VBOXDISK_FILE" | sha256sum | awk '{ print $1 }'
 }
 
-# storage_disk_file <vm> <disco>: fichero .vdi de un disco declarado. Si el
-# archivo no fija 'file', el nombre sale del directorio de la maquina y de la
-# clave del disco.
+# @description Fichero .vdi de un disco declarado. Si el archivo no fija 'file',
+# el nombre sale del directorio de la maquina y de la clave del disco.
+# @arg $1 string Nombre de la vm.
+# @arg $2 string Clave del disco declarado.
+# @stdout Ruta del fichero .vdi, sin salto de linea.
+# @stderr log_error si no se pudo derivar el fichero.
+# @exitcode 0 Ruta resuelta (propia o derivada de la maquina).
+# @exitcode 1 No se pudo resolver la ruta.
 storage_disk_file() {
     local vm="$1" disk="$2" file dir
     file="$(cfg_disk_get "$vm" "$disk" file)"
@@ -48,10 +58,13 @@ storage_disk_file() {
     return 1
 }
 
-# storage_fingerprint <vm>: huella fisica de toda la configuracion de
-# almacenamiento de la maquina: controladores y MAC reportados por
-# showvminfo, mas el fichero y la adjuncion de cada disco declarado (sin
-# VMState, para que la huella de una vm apagada coincida con la registrada).
+# @description Huella fisica de toda la configuracion de almacenamiento de la
+# maquina: controladores y MAC reportados por showvminfo, mas el fichero y la
+# adjuncion de cada disco declarado (sin VMState, para que la huella de una vm
+# apagada coincida con la registrada). Un disco sin fichero se aporta como
+# "<disco> sin fichero".
+# @arg $1 string Nombre de la vm en el hipervisor.
+# @stdout sha256 en hexadecimal de 64 caracteres, con salto de linea.
 storage_fingerprint() {
     local vm="$1" disk file out
     out="$(VBoxManage showvminfo "$vm" --machinereadable 2>/dev/null |
@@ -67,8 +80,11 @@ storage_fingerprint() {
     printf '%s' "$out" | sha256sum | awk '{ print $1 }'
 }
 
-# storage_disk_fingerprint <vm> <fichero>: huella fisica de un disco: estado
-# del fichero en el host, su ruta y la linea de adjuncion en showvminfo.
+# @description Huella fisica de un disco: estado del fichero en el host (mtime y
+# tamano), su ruta y la linea de adjuncion en showvminfo.
+# @arg $1 string Nombre de la vm en el hipervisor.
+# @arg $2 path Ruta del fichero .vdi; si no existe se huella como "ausente".
+# @stdout sha256 en hexadecimal de 64 caracteres, con salto de linea.
 storage_disk_fingerprint() {
     local vm="$1" disk="$2" disk_part cfg_part
     disk_part="ausente"
@@ -80,17 +96,24 @@ storage_disk_fingerprint() {
     printf '%s\n%s\n%s\n' "$disk_part" "$disk" "$cfg_part" | sha256sum | awk '{ print $1 }'
 }
 
-# storage_disk_attached <vm> <fichero>: 0 si showvminfo ya menciona el fichero.
+# @description Indica si showvminfo ya menciona el fichero, es decir, si el
+# disco esta adjunto a la maquina.
+# @arg $1 string Nombre de la vm en el hipervisor.
+# @arg $2 path Ruta del fichero .vdi.
+# @exitcode 0 El disco figura adjunto.
+# @exitcode 1 El disco no figura adjunto o no se pudo consultar la vm.
 storage_disk_attached() {
     local vm="$1" disk="$2"
     VBoxManage showvminfo "$vm" --machinereadable 2>/dev/null |
         grep -F "\"$disk\"" >/dev/null
 }
 
-# storage_attachment <vm> <fichero>: imprime "<controlador> <puerto>" donde
-# esta adjunto el fichero; sin adjuncion no imprime nada. En el formato
-# legible por maquina la linea de adjuncion es "CTL-N-0"="<fichero>": la
-# clave lleva comillas, por lo que el fichero es el cuarto campo.
+# @description Imprime donde esta adjunto el fichero. En el formato legible por
+# maquina la linea de adjuncion es "CTL-N-0"="<fichero>": la clave lleva
+# comillas, por lo que el fichero es el cuarto campo.
+# @arg $1 string Nombre de la vm en el hipervisor.
+# @arg $2 path Ruta del fichero .vdi.
+# @stdout "<controlador> <puerto>" sin salto de linea; sin adjuncion no imprime nada.
 storage_attachment() {
     local vm="$1" disk="$2"
     VBoxManage showvminfo "$vm" --machinereadable 2>/dev/null |
@@ -105,8 +128,13 @@ storage_attachment() {
             }'
 }
 
-# storage_medium_uuid <vm> <fichero>: identificador del medio en el
-# hipervisor; 1 si el fichero no figura adjunto.
+# @description Identificador del medio en el hipervisor (ImageUUID del puerto
+# donde esta adjunto el fichero).
+# @arg $1 string Nombre de la vm en el hipervisor.
+# @arg $2 path Ruta del fichero .vdi, que debe figurar adjunto.
+# @stdout UUID del medio con salto de linea.
+# @exitcode 0 UUID impreso.
+# @exitcode 1 El fichero no figura adjunto o no se pudo consultar la vm.
 storage_medium_uuid() {
     local vm="$1" disk="$2" info slot
     if ! info="$(VBoxManage showvminfo "$vm" --machinereadable 2>/dev/null)"; then
@@ -123,9 +151,11 @@ storage_medium_uuid() {
             '$2 == ctl "-ImageUUID-" rest { print $4; exit }'
 }
 
-# storage_ctl_index <info> <controlador>: indice numerico del controlador en
-# las claves storagecontroller<campo><indice> de showvminfo; vacio si no
-# figura.
+# @description Indice numerico del controlador en las claves
+# storagecontroller<campo><indice> de showvminfo.
+# @arg $1 string Salida completa de VBoxManage showvminfo --machinereadable.
+# @arg $2 string Nombre del controlador, tal como aparece en storagecontrollername<indice>.
+# @stdout El indice (p. ej. "0") con salto de linea; vacio si no figura.
 storage_ctl_index() {
     printf '%s\n' "$1" | awk -F'"' -v n="$2" '
         $0 ~ /^storagecontrollername[0-9]+=/ && $2 == n {
@@ -137,20 +167,30 @@ storage_ctl_index() {
         }'
 }
 
-# storage_ctl_field <info> <campo> <indice>: valor de la clave
-# storagecontroller<campo><indice>; vacio si no existe.
+# @description Valor de la clave storagecontroller<campo><indice> de showvminfo.
+# @arg $1 string Salida completa de VBoxManage showvminfo --machinereadable.
+# @arg $2 string Campo de la clave, p. ej. "portcount" o "maxportcount".
+# @arg $3 int Indice del controlador, tal como lo devuelve storage_ctl_index().
+# @stdout Valor de la clave con salto de linea; vacio si no existe.
 storage_ctl_field() {
     printf '%s\n' "$1" | awk -F'"' -v f="$2" -v i="$3" \
         '$1 == "storagecontroller" f i "=" { print $2; exit }'
 }
 
-# storage_pick_port <vm>: imprime "<controlador> <puerto>" libre; sin
-# controlador disponible retorna 3. La pertenencia de un puerto se decide
-# sobre las lineas "CTL-N-0"="medio" de showvminfo: la clave va entre
-# comillas, y una linea con valor none marca un puerto existente sin medio,
-# que por tanto esta libre. El limite superior es el maxportcount del
-# controlador, no el portcount vigente, porque un puerto aun no ampliado
-# sigue siendo un destino valido.
+# @description Imprime un puerto libre del controlador preferido de la maquina.
+# La pertenencia de un puerto se decide sobre las lineas "CTL-N-0"="medio" de
+# showvminfo: la clave va entre comillas, y una linea con valor none marca un
+# puerto existente sin medio, que por tanto esta libre. El limite superior es el
+# maxportcount del controlador, no el portcount vigente, porque un puerto aun no
+# ampliado sigue siendo un destino valido. Prefiere cualquier controlador
+# distinto de IDE.
+# @arg $1 string Nombre de la vm en el hipervisor.
+# @stdout "<controlador> <puerto>" sin salto de linea.
+# @stderr log_error si la vm no tiene controladores o no queda ningun puerto libre.
+# @exitcode 0 Puerto libre encontrado.
+# @exitcode 3 VBOXDISK_E_STORAGE: showvminfo fallo, la vm no tiene controladores o no hay puertos libres.
+# @see storage_ctl_index()
+# @see storage_ctl_field()
 storage_pick_port() {
     local vm="$1" info ctl idx bound port key max
     info="$(VBoxManage showvminfo "$vm" --machinereadable 2>/dev/null)" || return "$VBOXDISK_E_STORAGE"
@@ -184,10 +224,15 @@ storage_pick_port() {
     return "$VBOXDISK_E_STORAGE"
 }
 
-# storage_ensure_portcount <vm> <controlador> <puerto>: amplia el PortCount
-# del controlador cuando el puerto elegido queda fuera del rango vigente; el
-# hipervisor rechaza la adjuncion en un puerto inexistente. Sin dato legible
-# no se toca nada y la adjuncion decide.
+# @description Amplia el PortCount del controlador cuando el puerto elegido queda
+# fuera del rango vigente; el hipervisor rechaza la adjuncion en un puerto
+# inexistente. Sin dato legible no se toca nada y la adjuncion decide.
+# @arg $1 string Nombre de la vm en el hipervisor.
+# @arg $2 string Nombre del controlador.
+# @arg $3 int Puerto elegido (base 0) que debe quedar dentro del portcount.
+# @stderr log_error si falla la ampliacion, log_info al ampliar y la salida cruda de VBoxManage.
+# @exitcode 0 El puerto ya esta en rango, el controlador no es consultable o quedo ampliado.
+# @exitcode 3 VBOXDISK_E_STORAGE: no se pudo leer showvminfo ni ampliar el controlador.
 storage_ensure_portcount() {
     local vm="$1" ctl="$2" port="$3" info idx count want out
     info="$(VBoxManage showvminfo "$vm" --machinereadable 2>/dev/null)" || return "$VBOXDISK_E_STORAGE"
@@ -207,9 +252,14 @@ storage_ensure_portcount() {
     return 0
 }
 
-# storage_require_space <fichero> <mb>: el ancestro mas profundo existente del
-# fichero declarado tiene espacio para el disco que se va a crear. Se comprueba
-# antes de createmedium, para no dejar un medio a medias.
+# @description Comprueba que el ancestro mas profundo existente del fichero
+# declarado tiene espacio para el disco que se va a crear. Se comprueba antes de
+# createmedium, para no dejar un medio a medias.
+# @arg $1 path Ruta declarada del disco .vdi; los directorios inexistentes se remontan al ancestral existente.
+# @arg $2 int Tamano del disco en MB (se convierte a bytes: MB * 1024 * 1024).
+# @stderr log_warn si no se pudo medir el espacio (se continua sin esa comprobacion); log_error si falta espacio.
+# @exitcode 0 Hay espacio suficiente o no se pudo medir.
+# @exitcode 1 Espacio insuficiente (codigo propio, no VBOXDISK_E_STORAGE).
 storage_require_space() {
     local disk="$1" size_mb="$2" dir avail need
     dir="$(dirname "$disk")"
@@ -229,9 +279,19 @@ storage_require_space() {
     return 0
 }
 
-# storage_ensure_medium <vm> <fichero> <mb>: crea y adjunta el disco declarativo.
-# Si la vm esta encendida exige confirmacion, porque implica un ciclo de
-# encendido. Retorna 0, 3 (almacenamiento) o 4 (cancelado).
+# @description Crea y adjunta el disco declarativo. Si el fichero ya existe solo
+# se adjunta; si la vm esta encendida exige confirmacion, porque la adjuncion
+# implica detener la maquina (el llamador la vuelve a encender despues).
+# @arg $1 string Nombre de la vm en el hipervisor.
+# @arg $2 path Ruta del fichero .vdi a crear y adjuntar.
+# @arg $3 int Tamano del disco en MB, usado solo si hay que crearlo.
+# @stderr log_info, log_warn y log_error, mas la salida cruda de VBoxManage.
+# @exitcode 0 El disco ya estaba adjunto o quedo creado y adjunto.
+# @exitcode 2 VBOXDISK_E_COMM: no se pudo detener la maquina para adjuntar.
+# @exitcode 3 VBOXDISK_E_STORAGE: sin espacio, sin puerto, fallo al crear o al adjuntar.
+# @exitcode 4 VBOXDISK_E_CANCEL: el usuario rechazo la confirmacion.
+# @see confirm()
+# @see storage_pick_port()
 storage_ensure_medium() {
     local vm="$1" disk="$2" size_mb="$3"
     local was_running=0 pick ctl port state out rc
@@ -291,9 +351,14 @@ storage_ensure_medium() {
     return 0
 }
 
-# storage_ensure_detached <vm> <fichero>: retira el disco del hipervisor sin
-# borrarlo. En una maquina encendida se intenta primero el desprendimiento en
-# caliente y, si el hipervisor lo rechaza, se apaga y se reintenta.
+# @description Retira el disco del hipervisor sin borrarlo. En una maquina
+# encendida se intenta primero el desprendimiento en caliente y, si el
+# hipervisor lo rechaza, se apaga y se reintenta.
+# @arg $1 string Nombre de la vm en el hipervisor.
+# @arg $2 path Ruta del fichero .vdi a desprender.
+# @stderr log_info, log_warn y log_error, mas la salida cruda de VBoxManage.
+# @exitcode 0 El disco quedo desprendido (o ya estaba desprendido).
+# @exitcode 3 VBOXDISK_E_STORAGE: no se localizo el controlador o el desprendimiento fallo.
 storage_ensure_detached() {
     local vm="$1" disk="$2" att ctl port state out rc
     if ! storage_disk_attached "$vm" "$disk"; then
@@ -332,10 +397,15 @@ storage_ensure_detached() {
     return 0
 }
 
-# storage_delete_medium <vm> <fichero>: elimina del hipervisor y del host un
-# disco de datos ya desprendido. Nunca se toca un medio todavia adjunto ni
-# nada que no sea un fichero .vdi de datos, de modo que el disco del sistema
-# queda fuera del alcance de la orden.
+# @description Elimina del hipervisor y del host un disco de datos ya desprendido.
+# Nunca se toca un medio todavia adjunto ni nada que no sea un fichero .vdi de
+# datos, de modo que el disco del sistema queda fuera del alcance de la orden.
+# Si el fichero ya no existe en el host solo se cierra el medio.
+# @arg $1 string Nombre de la vm, para los mensajes de error.
+# @arg $2 path Ruta del fichero .vdi; debe terminar en ".vdi".
+# @stderr log_info y log_error, mas la salida cruda de VBoxManage.
+# @exitcode 0 Medio cerrado y fichero borrado (o el fichero ya no existia).
+# @exitcode 3 VBOXDISK_E_STORAGE: fichero no admitido, sigue adjunto, es la configuracion de la vm o fallo al eliminar.
 storage_delete_medium() {
     local vm="$1" disk="$2" cfg out rc
     if [[ "$disk" != *.vdi ]]; then
@@ -367,9 +437,11 @@ storage_delete_medium() {
     return 0
 }
 
-# storage_orphan_disks <vm>: discos registrados en state.lock que el archivo
+# @description Lista los discos registrados en state.lock que el archivo
 # declarativo ya no menciona y que siguen pendientes de decision; los que
 # quedaron inactivos se consideran resueltos.
+# @arg $1 string Nombre de la vm.
+# @stdout Una clave de disco por linea, en orden de registro; nada si no hay huerfanos.
 storage_orphan_disks() {
     local vm="$1" disk
     while IFS= read -r disk; do
@@ -384,8 +456,10 @@ storage_orphan_disks() {
     done < <(state_disk_keys "$vm")
 }
 
-# storage_plan_vm: plan de la verificacion declarativa en el host, sin tocar
-# la maquina (usado por --dry-run). Imprime una linea por stdout.
+# @description Plan de la verificacion declarativa en el host, sin tocar la
+# maquina (usado por --dry-run). No escribe en state.lock.
+# @arg $1 string Nombre de la vm, declarada o no en el archivo declarativo.
+# @stdout Una unica linea "<vm>: <plan> (estado actual: <potencia>)"; el plan lleva entre parentesis el detalle de los discos cuando lo hay.
 storage_plan_vm() {
     local vm="$1"
     local desired stored fp stored_fp power disk file size fstate
@@ -474,8 +548,21 @@ declare -gA GUEST_S_EXIT=() GUEST_S_DEVICE=() GUEST_S_TABLE=() GUEST_S_FSTYPE=()
 declare -gA GUEST_S_UUID=() GUEST_S_MOUNTED=() GUEST_S_MOUNTPOINT=() GUEST_S_FSTAB=()
 declare -gA GUEST_S_LINES=()
 
-# guest_snapshot <vm> <disco>: conserva los campos GUEST_* de la ultima
-# corrida del disco.
+# @description Conserva los campos GUEST_* de la ultima corrida del disco en las
+# copias por disco, para verificar cada uno en la etapa final aunque despues se
+# hayan ejecutado otras corridas invitado.
+# @arg $1 string Nombre de la vm.
+# @arg $2 string Clave del disco; la copia se guarda bajo la clave "<vm>/<disco>".
+# @set GUEST_S_EXIT array Copia de GUEST_EXIT para "<vm>/<disco>".
+# @set GUEST_S_DEVICE array Copia de GUEST_DEVICE para "<vm>/<disco>".
+# @set GUEST_S_TABLE array Copia de GUEST_TABLE para "<vm>/<disco>".
+# @set GUEST_S_FSTYPE array Copia de GUEST_FSTYPE para "<vm>/<disco>".
+# @set GUEST_S_UUID array Copia de GUEST_UUID para "<vm>/<disco>".
+# @set GUEST_S_MOUNTED array Copia de GUEST_MOUNTED para "<vm>/<disco>".
+# @set GUEST_S_MOUNTPOINT array Copia de GUEST_MOUNTPOINT para "<vm>/<disco>".
+# @set GUEST_S_FSTAB array Copia de GUEST_FSTAB para "<vm>/<disco>".
+# @set GUEST_S_LINES array Copia de GUEST_TABLE_LINES para "<vm>/<disco>".
+# @see guest_restore()
 guest_snapshot() {
     local key="$1/$2"
     GUEST_S_EXIT[$key]="$GUEST_EXIT"
@@ -489,7 +576,20 @@ guest_snapshot() {
     GUEST_S_LINES[$key]="$GUEST_TABLE_LINES"
 }
 
-# guest_restore <vm> <disco>: recarga en GUEST_* la copia del disco.
+# @description Recarga en GUEST_* la copia conservada del disco; sin copia previa
+# los campos quedan vacios.
+# @arg $1 string Nombre de la vm.
+# @arg $2 string Clave del disco; la copia se lee de la clave "<vm>/<disco>".
+# @set GUEST_EXIT string Restaurada desde GUEST_S_EXIT.
+# @set GUEST_DEVICE string Restaurada desde GUEST_S_DEVICE.
+# @set GUEST_TABLE string Restaurada desde GUEST_S_TABLE.
+# @set GUEST_FSTYPE string Restaurada desde GUEST_S_FSTYPE.
+# @set GUEST_UUID string Restaurada desde GUEST_S_UUID.
+# @set GUEST_MOUNTED string Restaurada desde GUEST_S_MOUNTED.
+# @set GUEST_MOUNTPOINT string Restaurada desde GUEST_S_MOUNTPOINT.
+# @set GUEST_FSTAB string Restaurada desde GUEST_S_FSTAB.
+# @set GUEST_TABLE_LINES string Restaurada desde GUEST_S_LINES.
+# @see guest_snapshot()
 guest_restore() {
     local key="$1/$2"
     GUEST_EXIT="${GUEST_S_EXIT[$key]:-}"
@@ -503,7 +603,20 @@ guest_restore() {
     GUEST_TABLE_LINES="${GUEST_S_LINES[$key]:-}"
 }
 
-# storage_parse_guest_output <texto>: extrae los pares clave=valor y la tabla.
+# @description Extrae los pares clave=valor y la tabla de la salida del script
+# invitado (emit_state) y los deja en los globales GUEST_*. Cada corrida
+# sustituye a la anterior: los campos ausentes quedan vacios.
+# @arg $1 string Salida completa del script invitado, multilinea.
+# @set GUEST_EXIT string Valor de VBOXDISK_EXIT (codigo de salida del invitado).
+# @set GUEST_DEVICE string Valor de DEVICE.
+# @set GUEST_TABLE string Valor de TABLE.
+# @set GUEST_FSTYPE string Valor de FSTYPE.
+# @set GUEST_UUID string Valor de UUID.
+# @set GUEST_MOUNTED string Valor de MOUNTED ("yes" cuando quedo montado).
+# @set GUEST_MOUNTPOINT string Valor de MOUNTPOINT.
+# @set GUEST_FSTAB string Valor de FSTAB ("yes" cuando quedo en fstab).
+# @set GUEST_TABLE_LINES string Todas las TABLE_LINE concatenadas con saltos de linea.
+# @set GUEST_NOTE string Ultima nota "guest_ensure: " emitida por el invitado.
 storage_parse_guest_output() {
     local out="$1" line
     GUEST_EXIT=""
@@ -537,9 +650,15 @@ storage_parse_guest_output() {
     done <<<"$out"
 }
 
-# storage_drift <vm> <disco>: 0 si el invitado difiere del ultimo registro
-# conocido (modificacion externa). Las claves sin registro previo no generan
-# deriva.
+# @description Detecta modificacion externa: compara los campos actuales de
+# GUEST_* con el ultimo registro conocido en state.lock (kv_device, kv_table,
+# kv_fstype, kv_uuid, kv_mounted, kv_fstab). Las claves sin registro previo no
+# generan deriva.
+# @arg $1 string Nombre de la vm.
+# @arg $2 string Clave del disco.
+# @stderr log_warn por cada clave con deriva, con el valor registrado y el actual.
+# @exitcode 0 Sin deriva: todo coincide o no hay registro previo.
+# @exitcode 1 Al menos una clave difiere del registro.
 storage_drift() {
     local vm="$1" disk="$2"
     local keys=(kv_device kv_table kv_fstype kv_uuid kv_mounted kv_fstab)
@@ -562,7 +681,11 @@ storage_drift() {
 # Devuelven 1 y registran el motivo cuando el invitado no coincide con lo
 # declarado; storage_verify_guest traduce cualquier fallo al codigo 3.
 
-# storage_require_exit <vm>: el script invitado termino con exito.
+# @description Comprueba que el script invitado termino con exito.
+# @arg $1 string Identificador "<vm>/<disco>" que encabeza el mensaje de error.
+# @stderr log_error si el invitado no termino con 0.
+# @exitcode 0 GUEST_EXIT vale 0.
+# @exitcode 1 El invitado fallo o su codigo no quedo registrado.
 storage_require_exit() {
     if [[ "$GUEST_EXIT" != "0" ]]; then
         log_error "$1: el script invitado termino con codigo ${GUEST_EXIT:-desconocido}"
@@ -571,7 +694,12 @@ storage_require_exit() {
     return 0
 }
 
-# storage_require_mounted <vm> <montaje>: el punto de montaje quedo montado.
+# @description Comprueba que el punto de montaje quedo montado en el invitado.
+# @arg $1 string Identificador "<vm>/<disco>" que encabeza el mensaje de error.
+# @arg $2 path Punto de montaje declarado, citado en el mensaje de error.
+# @stderr log_error si no quedo montado.
+# @exitcode 0 GUEST_MOUNTED vale "yes".
+# @exitcode 1 GUEST_MOUNTED es distinto de "yes".
 storage_require_mounted() {
     if [[ "$GUEST_MOUNTED" != "yes" ]]; then
         log_error "$1: el punto de montaje $2 no quedo montado"
@@ -580,7 +708,12 @@ storage_require_mounted() {
     return 0
 }
 
-# storage_require_fstab <vm> <montaje>: el montaje quedo declarado en fstab.
+# @description Comprueba que el montaje quedo declarado en /etc/fstab.
+# @arg $1 string Identificador "<vm>/<disco>" que encabeza el mensaje de error.
+# @arg $2 path Entrada declarada en fstab, citada en el mensaje de error.
+# @stderr log_error si no quedo declarado.
+# @exitcode 0 GUEST_FSTAB vale "yes".
+# @exitcode 1 GUEST_FSTAB es distinto de "yes".
 storage_require_fstab() {
     if [[ "$GUEST_FSTAB" != "yes" ]]; then
         log_error "$1: $2 no quedo declarado en /etc/fstab"
@@ -589,8 +722,12 @@ storage_require_fstab() {
     return 0
 }
 
-# storage_require_fstype <vm> <esperado>: el sistema de archivos instalado
-# es el declarado.
+# @description Comprueba que el sistema de archivos instalado es el declarado.
+# @arg $1 string Identificador "<vm>/<disco>" que encabeza el mensaje de error.
+# @arg $2 string Tipo de filesystem declarado (p. ej. ext4).
+# @stderr log_error si el tipo instalado difiere del declarado.
+# @exitcode 0 GUEST_FSTYPE coincide con lo declarado.
+# @exitcode 1 GUEST_FSTYPE difiere de lo declarado.
 storage_require_fstype() {
     if [[ "$GUEST_FSTYPE" != "$2" ]]; then
         log_error "$1: sistema de archivos '$GUEST_FSTYPE' distinto del declarado '$2'"
@@ -599,8 +736,12 @@ storage_require_fstype() {
     return 0
 }
 
-# storage_require_mountpoint <vm> <esperado>: el volumen quedo montado en la
-# ruta declarada.
+# @description Comprueba que el volumen quedo montado en la ruta declarada.
+# @arg $1 string Identificador "<vm>/<disco>" que encabeza el mensaje de error.
+# @arg $2 path Ruta de montaje declarada.
+# @stderr log_error si el volumen quedo montado en otra ruta.
+# @exitcode 0 GUEST_MOUNTPOINT coincide con lo declarado.
+# @exitcode 1 GUEST_MOUNTPOINT difiere de lo declarado.
 storage_require_mountpoint() {
     if [[ "$GUEST_MOUNTPOINT" != "$2" ]]; then
         log_error "$1: montado en '$GUEST_MOUNTPOINT' y no en '$2'"
@@ -609,9 +750,20 @@ storage_require_mountpoint() {
     return 0
 }
 
-# storage_verify_guest <vm> <disco>: orquesta la comprobacion final de la
-# convergencia de un disco; en cuanto alguna propiedad esperada no se cumple,
-# devuelve el codigo de almacenamiento y detiene la corrida de la vm.
+# @description Orquesta la comprobacion final de la convergencia de un disco;
+# en cuanto alguna propiedad esperada no se cumple, devuelve el codigo de
+# almacenamiento y detiene la corrida de la vm. Traduce cualquier fallo de las
+# comprobaciones al codigo 3.
+# @arg $1 string Nombre de la vm.
+# @arg $2 string Clave del disco; lee fs_type y mount_point del archivo declarativo.
+# @stderr Mensajes de log_error de la comprobacion que falle.
+# @exitcode 0 Todas las propiedades del invitado coinciden con lo declarado.
+# @exitcode 3 VBOXDISK_E_STORAGE: alguna propiedad no coincide.
+# @see storage_require_exit()
+# @see storage_require_mounted()
+# @see storage_require_fstab()
+# @see storage_require_fstype()
+# @see storage_require_mountpoint()
 storage_verify_guest() {
     local vm="$1" disk="$2" fs mount who="$1/$2"
     fs="$(cfg_disk_get "$vm" "$disk" fs_type)"

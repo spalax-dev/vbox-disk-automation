@@ -27,7 +27,10 @@ DRY_RUN=0
 VBOXDISK_ASSUME_YES=0
 LD_NAME=""
 
-# usage: ayuda de la interfaz, por stdout en --help y por stderr sin orden.
+# @description Ayuda de la interfaz: sale por stdout, que quien invoca
+# redirige a stderr cuando la orden falta.
+# @noargs
+# @stdout Texto de ayuda con ordenes, opciones y codigos de salida.
 usage() {
     cat <<'EOF'
 Uso: vboxdisk <orden> [opciones]
@@ -51,11 +54,18 @@ la vm | 3 almacenamiento o verificacion | 4 cancelado por el usuario
 EOF
 }
 
-# die_cfg: error de uso o de configuracion siempre con el codigo 1.
+# @description Termina con un error de uso o de configuracion siempre con el codigo 1.
+# @arg $1 string Mensaje de error (varios argumentos se unen en uno solo).
+# @stderr El mensaje, con sello de tiempo y nivel ERROR.
+# @exitcode 1 VBOXDISK_E_CONFIG; nunca retorna.
 die_cfg() { die "$VBOXDISK_E_CONFIG" "$@"; }
 
-# validate_hypervisor: cada vm declarada existe en el hipervisor.
+# @description Comprueba que cada vm declarada existe en el hipervisor.
 # Consulta de solo lectura; no enciende ni modifica maquina alguna.
+# @noargs
+# @stderr Mensaje de la vm inexistente, con sello de tiempo y nivel ERROR.
+# @exitcode 0 Todas las vm declaradas existen.
+# @exitcode 1 Alguna vm no existe o falta una dependencia (vbox_require).
 validate_hypervisor() {
     vbox_require
     local vm
@@ -66,9 +76,14 @@ validate_hypervisor() {
     done < <(cfg_vms)
 }
 
-# validate_config <con_hipervisor 0|1>: validacion previa a actuar.
-# Comprueba la dependencia yq, el archivo declarativo y, cuando el comando
-# lo pide, la existencia de cada vm en el hipervisor.
+# @description Validacion previa a actuar: comprueba la dependencia yq y el
+# archivo declarativo y, cuando el comando lo pide, la existencia de cada vm
+# en el hipervisor.
+# @arg $1 string "1" para comprobar ademas el hipervisor, "0" para no hacerlo; no vacio.
+# @stderr Motivo de la invalidacion, con sello de tiempo y nivel ERROR.
+# @exitcode 0 Configuracion valida.
+# @exitcode 1 Falta yq, el archivo declarativo no supera la validacion o una vm no existe.
+# @see validate_hypervisor()
 validate_config() {
     local check_hypervisor="$1"
     if ! have_cmd yq; then
@@ -80,9 +95,24 @@ validate_config() {
     fi
 }
 
-# cli_parse [argumentos...]: analiza la linea de comandos completa.
-# Deja la orden en CMD y sus opciones en las variables globales; una orden
-# desconocida o una bandera invalida terminan con el codigo de uso.
+# @description Analiza la linea de comandos completa. Deja la orden en CMD y
+# sus opciones en las variables globales; una orden desconocida o una bandera
+# invalida terminan con el codigo de uso. Los argumentos posicionales son la
+# orden (apply, status o ld) y, para ld, el nombre de la vm.
+# @option -f | --file FILE Archivo declarativo (por defecto ./vdisk.yml).
+# @option --dry-run Muestra el plan de cambios sin modificar nada; solo con la orden apply.
+# @option -y | --yes Omite las confirmaciones; ante un disco registrado y ausente del archivo elige eliminarlo.
+# @option -h | --help Muestra la ayuda y termina.
+# @option --version Muestra la version instalada y termina.
+# @set CMD string Orden recibida: apply, status o ld.
+# @set VBOXDISK_FILE path Archivo declarativo (por defecto ./vdisk.yml).
+# @set DRY_RUN int 1 con --dry-run, 0 en caso contrario.
+# @set VBOXDISK_ASSUME_YES int 1 con -y/--yes, 0 en caso contrario.
+# @set LD_NAME string Nombre de la vm que recibe la orden ld.
+# @stdout Texto de ayuda con -h/--help y la version con --version.
+# @stderr Mensajes de error y, cuando falta la orden, el aviso previo a la ayuda.
+# @exitcode 0 Con -h/--help o --version.
+# @exitcode 1 VBOXDISK_E_CONFIG: orden o bandera invalida; nunca retorna en error.
 cli_parse() {
     while (($#)); do
         case "$1" in

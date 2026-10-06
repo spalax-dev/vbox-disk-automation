@@ -16,3 +16,6 @@
 
 # Archivo declarativo del usuario
 vdisk.yml
+
+# Presentación (deck HyperFrames, solo local)
+presentacion/

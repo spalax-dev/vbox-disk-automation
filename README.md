@@ -44,6 +44,7 @@ vboxdisk ld VM1         # tabla de particiones de VM1 (registrada o en vivo)
 | `yq` | leer `vdisk.yml` |
 | `ip` | respaldo de la búsqueda de dirección IP |
 | `make`, `shellcheck`, `bats` | solo para desarrollar (`checkdeps`, `lint`, `test`) |
+| `shdoc`, `gawk` | solo para documentar (`checkdocs`, `docs`) |
 
 **Invitado (cada vm)**
 
@@ -62,6 +63,7 @@ make lint        # shellcheck
 make test        # pruebas BATS
 make install     # encadena las tres y solo entonces instala
 make uninstall   # retira ejecutable y librerías (no toca tu perfil)
+make docs        # genera docs/ con la referencia de la API (requiere shdoc)
 ```
 
 `make install` no necesita privilegios: copia el ejecutable en `~/.local/bin`,
@@ -178,6 +180,7 @@ conserva estado, bitácoras, `vdisk.yml` y el perfil del usuario.
 ```bash
 make lint      # shellcheck sobre src/vboxdisk y src/lib/*.sh
 make test      # bats tests/  (usa un doble de VBoxManage en tests/bin)
+make docs      # shdoc -> docs/ (índice completo en docs/index.md)
 ```
 
 ```
@@ -192,11 +195,22 @@ src/lib/guest_ensure.sh único fichero que corre dentro de la vm (3 guardas)
 src/lib/apply.sh        las cinco etapas de apply
 src/lib/queries.sh      órdenes de solo lectura status y ld
 tests/                  BATS + fixtures + doble de VBoxManage
-documento/              informe LaTeX y diagramas PlantUML
+docs/                   referencia de la API generada con make docs
+informe/                informe LaTeX (main/ con secciones/), diagramas, imágenes y parcial-1.pdf
 ```
 
 Las pruebas se aíslan con `VBOXDISK_STATE_DIR` y el doble de `VBoxManage`
 registra sus invocaciones, así que corren sin vm ni privilegios.
+
+## Documentación
+
+La referencia de la API de `src/lib/` está en [`docs/index.md`](docs/index.md):
+149 funciones repartidas en 9 bibliotecas, cada una con su descripción,
+argumentos, variables de entorno, códigos de salida y ejemplos.
+
+```bash
+make docs    # regenera docs/ a partir de las anotaciones shdoc de src/
+```
 
 ## Licencia
 

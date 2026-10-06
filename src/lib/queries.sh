@@ -20,8 +20,15 @@
 # lectura para mostrar la tabla real del invitado. Se carga desde el punto
 # de entrada src/vboxdisk.
 
-# vm_sync_status <vm>: estado de sincronizacion de la vm contra el
-# archivo declarativo, segun la huella registrada en state.lock.
+# @description Estado de sincronización de la vm contra el archivo declarativo,
+# según la huella registrada en state.lock.
+# @arg $1 string Nombre de la vm.
+# @stdout Una de estas tres cadenas, sin salto de línea: "sin estado" (sin
+#  registro previo), "sincronizada" o "desincronizada".
+# @exitcode 0 Siempre.
+# @example
+#   vm_sync_status web01  # imprime: sincronizada
+# @see storage_desired_hash()
 vm_sync_status() {
     local vm="$1" desired stored
     desired="$(storage_desired_hash "$vm")"
@@ -35,9 +42,14 @@ vm_sync_status() {
     fi
 }
 
-# vm_status_disks <vm>: resumen por disco para la columna DISCOS de status:
-# cuantos estan activos, cuantos inactivos, cuantos declarados sin registrar
-# y cuantos registrados quedaron pendientes de decision.
+# @description Resumen por disco para la columna DISCOS de status: cuántos
+# están activos, cuántos inactivos, cuántos declarados sin registrar y cuántos
+# registrados quedaron pendientes de decisión (discos huérfanos).
+# @arg $1 string Nombre de la vm.
+# @stdout Recuento con plural y comas, p. ej. "2 activo, 1 inactivo"; la
+#  cadena "(sin discos)" si no hay nada que contar, sin salto de línea.
+# @exitcode 0 Siempre.
+# @see plural()
 vm_status_disks() {
     local vm="$1" disk st
     local active=0 inactive=0 fresh=0 pending=0 parts=""
@@ -73,7 +85,15 @@ vm_status_disks() {
     printf '%s' "${parts%, }"
 }
 
-# plural <n> <palabra>: la palabra en plural cuando n no es uno.
+# @description Devuelve la palabra en plural (le añade una s final) cuando la
+# cantidad no es uno; tal cual si es uno.
+# @arg $1 int Cantidad.
+# @arg $2 string Palabra en singular.
+# @stdout La palabra singular o pluralizada, sin salto de línea.
+# @exitcode 0 Siempre.
+# @example
+#   plural 1 activo  # activo
+#   plural 3 activo  # activos
 plural() {
     if (($1 == 1)); then
         printf '%s' "$2"
@@ -82,9 +102,16 @@ plural() {
     fi
 }
 
-# vm_status_ip <vm>: direccion IP para la tabla de status. Si la vm esta
-# encendida se consulta en tiempo de ejecucion; si no, se muestra la
-# registrada en state.lock y se advierte que la maquina esta apagada.
+# @description Dirección IP para la tabla de status. Si la vm está encendida se
+# consulta en tiempo de ejecución (un único intento, sin esperar); si no, se
+# muestra la registrada en state.lock y se advierte que la máquina está
+# apagada.
+# @arg $1 string Nombre de la vm.
+# @stdout Con la vm encendida, la IP o "(no disponible)"; con la vm apagada,
+#  la IP registrada con el sufijo " (apagada)" y, si no la hay,
+#  "(sin registro) (apagada)". Sin salto de línea.
+# @exitcode 0 Siempre.
+# @see vbox_detect_ip()
 vm_status_ip() {
     local vm="$1" power ip
     power="$(vbox_power_state "$vm" || true)"
@@ -99,7 +126,16 @@ vm_status_ip() {
     vbox_detect_ip "$vm" 0 || printf '(no disponible)'
 }
 
-# cmd_status: tabla de sincronizacion, discos e IP por vm, de solo lectura.
+# @description Tabla de sincronización, discos e IP por vm, de solo lectura:
+# ninguna vm se enciende ni se modifica.
+# @noargs
+# @stdout Cabecera MAQUINA, ESTADO, DISCOS y DIRECCION_IP y una fila por vm
+#  declarada en el archivo.
+# @stderr log_error si falta yq, el archivo no es válido, una vm declarada no
+#  existe en el hipervisor o faltan dependencias del host.
+# @exitcode 0 Tabla impresa.
+# @exitcode 1 La validación de la configuración o del hipervisor falló (VBOXDISK_E_CONFIG): sale del proceso.
+# @see vm_sync_status()
 cmd_status() {
     validate_config 1
     printf '%-12s %-16s %-30s %s\n' "MAQUINA" "ESTADO" "DISCOS" "DIRECCION_IP"
@@ -112,9 +148,19 @@ cmd_status() {
     done < <(cfg_vms)
 }
 
-# cmd_ld <nombre>: ultima corrida registrada y tabla de particiones de cada
-# disco con registro en state.lock. Sin registro, consulta la tabla real a
-# la vm si esta encendida y, si no lo esta, explica como se genera.
+# @description Última corrida registrada y tabla de particiones de cada disco
+# con registro en state.lock. Sin registro previo, consulta la tabla real a la
+# vm si está encendida (ld_live) y, si no lo está, explica cómo se genera.
+# @arg $1 string Nombre de la vm; debe estar declarada en $VBOXDISK_FILE.
+# @stdout Encabezado "registro de <vm>: <fecha>", un bloque por disco con su
+#  estado, tamaño, sistema de ficheros, etiqueta, punto de montaje y tabla de
+#  particiones, o el aviso de que no la hay.
+# @stderr log_error cuando la configuración es inválida o la vm no está
+#  declarada; con consulta en vivo, los mensajes y la barra de ld_live.
+# @exitcode 0 Consulta mostrada.
+# @exitcode 1 La configuración no es válida o la vm no está declarada en el archivo (die_cfg); con consulta en vivo, también si la vm está apagada.
+# @exitcode 2 Solo con consulta en vivo: fallo de comunicación con el invitado (VBOXDISK_E_COMM).
+# @see ld_live()
 cmd_ld() {
     local name="$1" run disk st table size label mount fstype
     local found=0
@@ -150,10 +196,20 @@ cmd_ld() {
     fi
 }
 
-# ld_live <vm>: sin registro previo, lee la tabla real de los discos
-# declarados abriendo una sesion de Guest Control contra la vm encendida.
-# La consulta es de sola lectura y jamas enciende la maquina: si esta
-# apagada, se explica que el registro se genera con apply.
+# @description Sin registro previo, lee la tabla real de los discos declarados
+# abriendo una sesión de Guest Control contra la vm encendida. La consulta es
+# de sola lectura y jamás enciende la máquina: si está apagada, se explica que
+# el registro se genera con apply. Los discos declarados inactivos se omiten.
+# @arg $1 string Nombre de la vm.
+# @set VBOXDISK_GUEST_QUIET int Se fija a 1 durante la consulta para retener la salida cruda del invitado y se retira (unset) al terminar.
+# @stdout Cabecera con la fecha de la consulta y, por cada disco presente, su
+#  bloque de particiones o el aviso de que no tiene tabla; si ningún disco está
+#  presente, un aviso final para ejecutar apply.
+# @stderr Registros y refrescos de la barra de progreso.
+# @exitcode 0 Consulta completada, aunque algún disco no esté presente.
+# @exitcode 1 La vm no está encendida o faltan dependencias del host (die_cfg / vbox_require): sale del proceso.
+# @exitcode 2 No se pudo abrir la sesión con el invitado o ningún disco pudo consultarse (VBOXDISK_E_COMM): sale del proceso.
+# @see cmd_ld()
 ld_live() {
     local vm="$1" pstate word disk rc size fstype label mount
     local total=0 ok=0 avisos=0

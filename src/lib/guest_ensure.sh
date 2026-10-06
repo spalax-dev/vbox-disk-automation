@@ -37,6 +37,10 @@ FSTYPE=""
 LABEL=""
 PASSFILE=""
 
+# @description Texto de uso del script invitado; quien invoca lo redirige a
+# stderr cuando reporta un argumento invalido.
+# @noargs
+# @stdout Una linea con el uso y sus opciones obligatorias y opcionales.
 usage() {
     cat <<'EOF'
 Uso: guest_ensure.sh [--probe | --release] --size-mb N --mount /ruta
@@ -90,8 +94,13 @@ while (($#)); do
     shift
 done
 
-# finish <codigo>: destruye el fichero de credenciales, emite la centinela
+# @description Destruye el fichero de credenciales, emite la centinela
 # VBOXDISK_EXIT=<codigo> por stdout y termina con ese mismo codigo.
+# @arg $1 int Codigo de salida: 0 ok, 1 validacion o elevacion, 3 almacenamiento.
+# @stdout La centinela VBOXDISK_EXIT=<codigo>.
+# @exitcode 0 Terminacion correcta.
+# @exitcode 1 Argumentos invalidos o elevacion con sudo fallida.
+# @exitcode 3 Fallo de almacenamiento (codigo por defecto de fail).
 finish() {
     local rc="$1"
     if [[ -n "${PASSFILE:-}" && -f "${PASSFILE:-}" ]]; then
@@ -101,9 +110,17 @@ finish() {
     exit "$rc"
 }
 
-# validate_args: validacion de los argumentos obligatorios antes de
-# cualquier accion. Cada comprobacion reporta su propio motivo de rechazo
-# y termina con la centinela; ninguna toca el sistema de archivos.
+# @description Validacion de los argumentos obligatorios antes de cualquier
+# accion. Cada comprobacion reporta su propio motivo de rechazo y termina con
+# la centinela; ninguna toca el sistema de archivos.
+# @option --probe | --release Modos incompatibles entre si.
+# @option --mount /ruta Punto de montaje obligatorio, absoluto y distinto de /.
+# @option --size-mb N Tamano en MB obligatorio, salvo en --release.
+# @option --fstype ext4|xfs Tipo de sistema de archivos obligatorio, salvo en --release.
+# @option --label ETIQUETA Obligatoria salvo en --release; [A-Za-z0-9._-], hasta 16 caracteres en ext4 y 12 en xfs.
+# @stderr Motivo del rechazo o el texto de uso.
+# @exitcode 0 Argumentos validos.
+# @exitcode 1 Argumentos invalidos: termina via finish con la centinela.
 validate_args() {
     if ((PROBE == 1 && RELEASE == 1)); then
         echo "--probe y --release son incompatibles" >&2
@@ -168,8 +185,10 @@ G_MOUNTED="no"
 G_FSTAB="no"
 G_SIZE_MB=0
 
-# emit_state: vuelca el estado observado en pares clave=valor por stdout,
+# @description Vuelca el estado observado en pares clave=valor por stdout,
 # terminando con la tabla de lsblk como lineas TABLE_LINE=.
+# @noargs
+# @stdout DEVICE, SIZE_MB, TABLE, PART, FSTYPE, UUID, MOUNTED, MOUNTPOINT y FSTAB, y luego TABLE_LINE=<linea> por cada renglon de lsblk.
 emit_state() {
     echo "DEVICE=$G_DEV"
     echo "SIZE_MB=$G_SIZE_MB"
@@ -188,15 +207,25 @@ emit_state() {
     fi
 }
 
-# fail <mensaje> [codigo]: mensaje de error en stderr y fin con la centinela
-# (codigo 3, almacenamiento, si no se indica otro).
+# @description Mensaje de error en stderr y fin con la centinela (codigo 3,
+# almacenamiento, si no se indica otro).
+# @arg $1 string Mensaje del fallo; se antepone "guest_ensure: ".
+# @arg $2 int Codigo de salida opcional; por defecto 3.
+# @stderr El mensaje del fallo con el prefijo "guest_ensure: ".
+# @exitcode 3 Codigo por defecto cuando no se indica otro.
+# @exitcode 1 Codigo explicito en $2 (el unico que se pasa en este script).
+# @see finish()
 fail() {
     echo "guest_ensure: $1" >&2
     finish "${2:-3}"
 }
 
-# assert_not_system_disk <disco>: el destino nunca es el disco que contiene la
-# raiz; si lo es, la corrida se detiene sin tocar nada.
+# @description El destino nunca es el disco que contiene la raiz; si lo es,
+# la corrida se detiene sin tocar nada.
+# @arg $1 string Dispositivo objetivo; si esta vacio o no es de bloque no hace nada.
+# @stderr Mensaje de rechazo cuando el destino es el disco del sistema.
+# @exitcode 0 El destino no es el disco del sistema (o no es de bloque).
+# @exitcode 1 Termina via fail cuando el destino es o contiene la raiz.
 assert_not_system_disk() {
     local target="$1" root_src root_disk resolved
     [[ -n "$target" && -b "$target" ]] || return 0
@@ -219,9 +248,13 @@ assert_not_system_disk() {
     return 0
 }
 
-# device_from_label <etiqueta>: disco que contiene el sistema de archivos con
-# esa etiqueta; la particion se eleva a su disco contenedor, porque las guardas
-# se aplican siempre sobre el disco completo.
+# @description Disco que contiene el sistema de archivos con esa etiqueta; la
+# particion se eleva a su disco contenedor, porque las guardas se aplican
+# siempre sobre el disco completo.
+# @arg $1 string Etiqueta del sistema de archivos.
+# @stdout El dispositivo (/dev/sdX) sin salto de linea.
+# @exitcode 0 Encontro el disco.
+# @exitcode 1 No hay ningun dispositivo de bloque con esa etiqueta.
 device_from_label() {
     local dev parent
     dev="$(blkid -L "$1" 2>/dev/null || true)"
@@ -236,9 +269,12 @@ device_from_label() {
     return 0
 }
 
-# device_hint_ok <disco>: la pista del host solo vale si el dispositivo existe
-# y su tamano coincide con el declarado (tolerancia de 1 MB); en cualquier otro
-# caso la deteccion sigue por el tamano.
+# @description La pista del host solo vale si el dispositivo existe y su
+# tamano coincide con el declarado en SIZE_MB (tolerancia de 1 MB); en
+# cualquier otro caso la deteccion sigue por el tamano.
+# @arg $1 string Dispositivo sugerido por el host, p. ej. /dev/sdb.
+# @exitcode 0 El dispositivo existe y su tamano difiere 1 MB o menos.
+# @exitcode 1 No es un dispositivo de bloque o el tamano difiere mas de 1 MB.
 device_hint_ok() {
     local dev="$1" want tol diff actual
     if [[ ! -b "$dev" ]]; then
@@ -254,9 +290,15 @@ device_hint_ok() {
     ((diff <= tol))
 }
 
-# detect_by_size: el disco cuyo tamano coincide con el declarado, siempre que
-# no tenga etiqueta (esa se identifica por su etiqueta), ni montajes, ni la
-# raiz; dos candidatos iguales no se desempatan a ciegas.
+# @description El disco cuyo tamano coincide con el declarado (SIZE_MB,
+# tolerancia de 1 MB), siempre que no tenga etiqueta (esa se identifica por su
+# etiqueta), ni montajes, ni la raiz; dos candidatos iguales no se desempatan
+# a ciegas.
+# @noargs
+# @set G_DEV string Disco identificado.
+# @stderr Explica la ambiguedad o la ausencia de candidatos.
+# @exitcode 0 Un unico candidato; deja el disco en G_DEV.
+# @exitcode 1 Ningun candidato o varios candidatos sin desempatar.
 detect_by_size() {
     local name size type tol diff best="" found=0
     local want=$((SIZE_MB * 1024 * 1024))
@@ -293,9 +335,15 @@ detect_by_size() {
     return 0
 }
 
-# detect_device: la etiqueta declarada, y si el disco aun no la tiene, la
-# pista del host y despues el tamano. Devuelve 1 sin tocar el sistema; quien
-# decide si el fallo detiene la corrida es el flujo principal.
+# @description La etiqueta declarada, y si el disco aun no la tiene, la pista
+# del host y despues el tamano. Devuelve 1 sin tocar el sistema; quien decide
+# si el fallo detiene la corrida es el flujo principal.
+# @noargs
+# @set G_DEV string Disco identificado.
+# @exitcode 0 Disco identificado.
+# @exitcode 1 Ningun metodo identifico el disco.
+# @see device_from_label()
+# @see device_hint_ok()
 detect_device() {
     local dev
     if [[ -n "$LABEL" ]] && dev="$(device_from_label "$LABEL")"; then
@@ -309,8 +357,17 @@ detect_device() {
     detect_by_size
 }
 
-# collect: observa el dispositivo actual sin modificarlo y rellena las
+# @description Observa el dispositivo actual sin modificarlo y rellena las
 # variables G_* (tabla, particion, fs, UUID, montaje y fstab).
+# @noargs
+# @set G_PART string Primera particion del disco, o la que lleva la etiqueta declarada si pertenece a el; vacia si no hay.
+# @set G_TABLE string Tipo de tabla de particiones (gpt, dos) o none.
+# @set G_FSTYPE string Sistema de archivos de la particion, vacio si no existe.
+# @set G_UUID string UUID de la particion, vacio si no existe.
+# @set G_MOUNTED string "yes" si MOUNT esta montado, "no" en caso contrario.
+# @set G_FSTAB string "yes" si /etc/fstab ya declara el UUID, "no" en caso contrario.
+# @set G_SIZE_MB int Tamano del disco en MB; 0 si el dispositivo no existe.
+# @exitcode 0 Siempre.
 collect() {
     local pttype lp parent
     G_PART=""
@@ -355,8 +412,12 @@ collect() {
     return 0
 }
 
-# wait_for_partition: aguarda hasta 15 s a que udev publique la particion
-# recien creada por sfdisk.
+# @description Aguarda hasta 15 s a que udev publique la particion recien
+# creada por sfdisk.
+# @noargs
+# @set G_PART string Particion publicada por el kernel.
+# @exitcode 0 La particion aparecio en el plazo.
+# @exitcode 1 No aparecio tras 15 segundos.
 wait_for_partition() {
     local i
     for ((i = 0; i < 15; i++)); do
@@ -369,8 +430,10 @@ wait_for_partition() {
     return 1
 }
 
-# ensure_label: aplica la etiqueta declarada si difiere de la actual
-# (e2label en ext4, xfs_admin en xfs).
+# @description Aplica la etiqueta declarada si difiere de la actual (e2label en
+# ext4, xfs_admin en xfs); no hace nada sin etiqueta declarada ni sin particion.
+# @noargs
+# @exitcode 0 Siempre; un fallo de la herramienta no detiene la corrida.
 ensure_label() {
     local current
     [[ -n "$LABEL" && -n "$G_PART" ]] || return 0
@@ -389,8 +452,11 @@ ensure_label() {
     return 0
 }
 
-# ensure_fstab: anade la entrada UUID al montar solo si aun no existe;
-# pass 0 en xfs y 2 en ext4, segun la convencion de fsck.
+# @description Anade la entrada UUID a /etc/fstab al montar solo si aun no
+# existe; pass 0 en xfs y 2 en ext4, segun la convencion de fsck.
+# @noargs
+# @stderr Confirma la entrada agregada.
+# @exitcode 0 Siempre; sin entrada que agregar tambien.
 ensure_fstab() {
     local opts pass line
     grep -qE "^[[:space:]]*UUID=${G_UUID}[[:space:]]" /etc/fstab 2>/dev/null && return 0
@@ -407,9 +473,12 @@ ensure_fstab() {
     return 0
 }
 
-# remove_fstab_entries: retira de /etc/fstab las lineas que declaran el punto
-# de montaje (o la etiqueta, si se conoce); no cambia los permisos del
-# fichero porque el contenido se reescribe sobre el mismo inode.
+# @description Retira de /etc/fstab las lineas que declaran el punto de
+# montaje (o la etiqueta, si se conoce); no cambia los permisos del fichero
+# porque el contenido se reescribe sobre el mismo inode.
+# @noargs
+# @stderr Confirma la entrada retirada para el punto de montaje.
+# @exitcode 0 Siempre; sin entrada que retirar tambien.
 remove_fstab_entries() {
     local tmp
     if [[ ! -r /etc/fstab ]]; then
@@ -430,8 +499,12 @@ remove_fstab_entries() {
     return 0
 }
 
-# release_mount: el retiro total de un disco inactivo o eliminado: desmonta
-# el punto declarado y borra su entrada persistente, sin modificar el disco.
+# @description El retiro total de un disco inactivo o eliminado: desmonta el
+# punto declarado y borra su entrada persistente, sin modificar el disco.
+# @noargs
+# @stderr Avisa del desmontaje o de que el punto no estaba montado.
+# @exitcode 0 Desmontaje y fstab resueltos (o ya resueltos).
+# @exitcode 3 Termina via fail si el desmontaje no se pudo completar.
 release_mount() {
     if findmnt --mountpoint "$MOUNT" >/dev/null 2>&1; then
         echo "guest_ensure: desmontando $MOUNT" >&2
@@ -443,8 +516,13 @@ release_mount() {
     return 0
 }
 
-# converge: aplicacion de las tres guardas en orden, cada una tras comprobar
-# que su condicion aun no se cumple.
+# @description Aplicacion de las tres guardas en orden (tabla de particiones,
+# sistema de archivos, montaje y fstab), cada una tras comprobar que su
+# condicion aun no se cumple.
+# @noargs
+# @stderr Progreso de cada guarda, avisos de montaje y el resumen con df -h.
+# @exitcode 0 Las tres guardas quedaron satisfechas.
+# @exitcode 3 Termina via fail ante cualquier guarda fallida.
 converge() {
     # Guarda 1: tabla de particiones.
     collect

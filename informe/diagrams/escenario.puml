@@ -36,7 +36,7 @@ LAN -[#E53935,dashed]-> NIC2
 SOL -[#1E88E5,bold]-> VBox : "1. VBoxManage startvm"
 VBox .[#1E88E5,bold].> GA1 : "3. guestcontrol run"
 VBox .[#1E88E5,bold].> GA2
-GA1 -[#43A047,bold]-> D1 : "4. lsblk · parted · mkfs\nmkdir · fstab · mount"
+GA1 -[#43A047,bold]-> D1 : "4. lsblk · sfdisk · mkfs\nmkdir · fstab · mount"
 GA1 -[#43A047,bold]-> D1B
 GA2 -[#43A047,bold]-> D2
 VM1 .[#43A047,dashed].> VBox : "5. verificación\n(findmnt · df -h)"
