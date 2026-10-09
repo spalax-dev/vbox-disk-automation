@@ -152,3 +152,67 @@ setup() {
     [ "$(grep -oF '[1/5]' "$err" | wc -l)" -eq 4 ]
     ! grep -qP $'\x1b\[[0-9]+[FE]' "$err"
 }
+
+@test "colorize devuelve el texto tal cual cuando la salida no es terminal" {
+    run colorize 1 31 "hola"
+    [ "$status" -eq 0 ]
+    [ "$output" = "hola" ]
+    run colorize 2 1 "hola"
+    [ "$output" = "hola" ]
+}
+
+@test "VBOXDISK_COLOR=always envuelve el texto y VBOXDISK_COLOR=never lo deja plano" {
+    export VBOXDISK_COLOR=always
+    run colorize 1 31 "hola"
+    [ "$output" = $'\x1b[31mhola\x1b[0m' ]
+    export VBOXDISK_COLOR=never
+    run colorize 2 36 "aviso"
+    [ "$output" = "aviso" ]
+    # Un codigo vacio no pinta, aunque el descriptor admita color.
+    export VBOXDISK_COLOR=always
+    run colorize 1 "" "hola"
+    [ "$output" = "hola" ]
+}
+
+@test "NO_COLOR y TERM=dumb mandan sobre VBOXDISK_COLOR=always" {
+    export VBOXDISK_COLOR=always
+    export NO_COLOR=1
+    run colorize 1 31 "hola"
+    [ "$output" = "hola" ]
+    unset NO_COLOR
+    export TERM=dumb
+    run colorize 1 31 "hola"
+    [ "$output" = "hola" ]
+}
+
+@test "log pinta el nivel en stderr y deja la bitacora plana" {
+    export VBOXDISK_COLOR=always
+    local log="$BATS_TEST_TMPDIR/color.log" err="$BATS_TEST_TMPDIR/err"
+    VBOXDISK_LOG_FILE="$log"
+    log_info "mensaje" 2>"$err"
+    grep -qF $'\x1b[36m[INFO]' "$err"
+    grep -qF '[INFO] mensaje' "$log"
+    ! grep -qF $'\x1b' "$log"
+    VBOXDISK_LOG_FILE="$BATS_TEST_TMPDIR/warn.log"
+    log_warn "aviso" 2>>"$err"
+    grep -qF $'\x1b[33m[WARN]' "$err"
+    VBOXDISK_LOG_FILE="$BATS_TEST_TMPDIR/error.log"
+    log_error "fallo" 2>>"$err"
+    grep -qF $'\x1b[31m[ERROR]' "$err"
+}
+
+@test "el cierre de la etapa pinta listo en verde y fallida en rojo" {
+    export VBOXDISK_COLOR=always
+    local err="$BATS_TEST_TMPDIR/err"
+    {
+        stage_begin 1 "verificacion declarativa de VM1"
+        stage_end 0
+        stage_begin 2 "preparacion del almacenamiento"
+        stage_end 1
+    } 2>"$err"
+    grep -qF $'\x1b[32mlisto' "$err"
+    grep -qF $'\x1b[31mfallida' "$err"
+    # El registro de la etapa conserva el texto plano despues del reset.
+    grep -qF 'etapa 1/5: verificacion declarativa de VM1 completada' "$err"
+    grep -qF 'etapa 2/5: preparacion del almacenamiento fallida' "$err"
+}

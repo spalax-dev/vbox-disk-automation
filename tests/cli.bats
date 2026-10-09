@@ -290,6 +290,27 @@ sync_env() {
     [[ "$output" == *"sin estado"* ]]
     [[ "$output" == *"2 sin registrar"* ]]
     [[ "$output" == *"1 sin registrar"* ]]
+    # Sin terminal no se pinta nada: las columnas siguen cuadriculadas.
+    [[ "$output" != *$'\x1b['* ]]
+}
+
+@test "status pinta la cabecera en negrita y el estado de sincronizacion" {
+    export VBOXDISK_COLOR=always
+    run "$ENTRY" status -f "$FIX/valid.yml"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *$'\x1b[1mMAQUINA'* ]]
+    [[ "$output" == *$'\x1b[2msin estado'* ]]
+    # El color envuelve la celda ya rellenada: los espacios de relleno quedan
+    # dentro de la secuencia y la columna siguiente no se corre.
+    grep -qP '\x1b\[2msin estado +\x1b\[0m' <<<"$output"
+}
+
+@test "apply --dry-run pinta el plan en terminal" {
+    export VBOXDISK_COLOR=always
+    run "$ENTRY" apply --dry-run -f "$FIX/valid.yml"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *$'\x1b['* ]]
+    [[ "$output" == *$'\x1b[33mprimera aplicacion'* ]]
 }
 
 @test "status refleja los discos registrados en state.lock" {

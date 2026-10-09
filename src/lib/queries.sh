@@ -146,7 +146,9 @@ vm_status_ip() {
 # ninguna vm se enciende ni se modifica.
 # @noargs
 # @stdout Cabecera MAQUINA, ESTADO, DISCOS y DIRECCION_IP y una fila por vm
-#  declarada en el archivo.
+#  declarada en el archivo. En terminal la cabecera va en negrita y la celda
+#  de ESTADO pinta según el valor: verde sincronizada, amarillo
+#  desincronizada y tenue sin estado; la bitácora y lo redirigido van planos.
 # @stderr log_error si falta yq, el archivo no es válido, una vm declarada no
 #  existe en el hipervisor o faltan dependencias del host.
 # @exitcode 0 Tabla impresa.
@@ -154,13 +156,23 @@ vm_status_ip() {
 # @see vm_sync_status()
 cmd_status() {
     validate_config 1
-    printf '%-12s %-32s %-30s %s\n' "MAQUINA" "ESTADO" "DISCOS" "DIRECCION_IP"
-    local vm estado discos ip
+    # El color se aplica sobre la celda ya rellenada: los códigos de control
+    # no cuentan como ancho y las columnas siguen alineadas.
+    printf '%s\n' \
+        "$(colorize 1 1 "$(printf '%-12s %-32s %-30s %s' "MAQUINA" "ESTADO" "DISCOS" "DIRECCION_IP")")"
+    local vm estado discos ip code
     while IFS= read -r vm; do
         estado="$(vm_sync_status "$vm")"
         discos="$(vm_status_disks "$vm")"
         ip="$(vm_status_ip "$vm")"
-        printf '%-12s %-32s %-30s %s\n' "$vm" "$estado" "$discos" "$ip"
+        case "$estado" in
+            sincronizada*) code=32 ;;
+            desincronizada*) code=33 ;;
+            *) code=2 ;;
+        esac
+        printf '%-12s %s %-30s %s\n' "$vm" \
+            "$(colorize 1 "$code" "$(printf '%-32s' "$estado")")" \
+            "$discos" "$ip"
     done < <(cfg_vms)
 }
 
@@ -266,10 +278,10 @@ ld_live() {
             # el disco: es una condicion del invitado, no un fallo de
             # comunicacion, y se informa con el mensaje del propio script.
             if [[ -n "$GUEST_EXIT" ]]; then
-                say "disco $disk: ${GUEST_NOTE:-no identificable en el invitado}"
+                say "$(colorize 1 33 "disco $disk: ${GUEST_NOTE:-no identificable en el invitado}")"
                 avisos=$((avisos + 1))
             else
-                say "disco $disk: consulta fallida en el invitado (codigo $rc)"
+                say "$(colorize 1 31 "disco $disk: consulta fallida en el invitado (codigo $rc)")"
             fi
             continue
         fi
@@ -285,7 +297,7 @@ ld_live() {
     guest_session_close "$vm"
     if ((total > 0 && ok == 0)); then
         if ((avisos == total)); then
-            say "ningun disco declarado esta presente en el invitado; ejecute 'vboxdisk apply' para crearlos y registrarlos"
+            say "$(colorize 1 33 "ningun disco declarado esta presente en el invitado; ejecute 'vboxdisk apply' para crearlos y registrarlos")"
             return 0
         fi
         die "$VBOXDISK_E_COMM" "$vm: no se pudo consultar ningun disco en la vm"

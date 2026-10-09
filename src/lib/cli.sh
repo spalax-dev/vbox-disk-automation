@@ -49,6 +49,10 @@ Opciones:
   -h, --help       Muestra esta ayuda y termina
   --version        Muestra la version instalada y termina
 
+Entorno:
+  NO_COLOR         Cualquier valor apaga el color de la salida
+  VBOXDISK_COLOR   always o never fija el color sin mirar la terminal
+
 Codigos de salida: 0 convergido | 1 uso o configuracion | 2 comunicacion con
 la vm | 3 almacenamiento o verificacion | 4 cancelado por el usuario
 EOF

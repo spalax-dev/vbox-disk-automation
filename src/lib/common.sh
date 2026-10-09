@@ -60,6 +60,45 @@ have_cmd() { command -v "$1" >/dev/null 2>&1; }
 # @exitcode 1 stderr no es un terminal.
 is_tty() { [[ -t 2 ]]; }
 
+# @description Indica si un descriptor admite color: NO_COLOR y TERM=dumb lo prohiben,
+# VBOXDISK_COLOR=always lo obliga y VBOXDISK_COLOR=never lo prohíbe; en otro caso solo si
+# el descriptor es una terminal. Ese orden deja la salida redigida y los caños sin secuencias
+# de control sin tener que preguntarlo en cada punto de emisión.
+# @arg $1 int Descriptor que va a recibir el texto (1 stdout, 2 stderr).
+# @exitcode 0 El texto se puede pintar en ese descriptor.
+# @exitcode 1 El texto va sin color.
+# @see colorize()
+color_enabled() {
+    local fd="${1:-2}"
+    [[ -n "${NO_COLOR:-}" ]] && return 1
+    [[ "${TERM:-}" != "dumb" ]] || return 1
+    case "${VBOXDISK_COLOR:-}" in
+        always) return 0 ;;
+        never) return 1 ;;
+    esac
+    [[ -t "$fd" ]]
+}
+
+# @description Envuelve un texto en la secuencia SGR indicada si el descriptor la admite, y lo
+# devuelve tal cual si no. El que llama pinta sin ramificar y sin dejar secuencias de control
+# en la bitácora ni en lo que se redirige a un fichero.
+# @arg $1 int Descriptor que va a recibir el texto (1 stdout, 2 stderr).
+# @arg $2 string Código SGR a aplicar (31 rojo, 33 amarillo, 36 cian, 2 tenue, 1 negrita); vacío no pinta.
+# @arg $3 string Texto a envolver.
+# @stdout El texto con el color alrededor, o el texto original cuando no corresponde color.
+# @exitcode 0 Siempre.
+# @see color_enabled()
+# @example
+#   printf '%s\n' "$(colorize 2 31 "falló")"
+colorize() {
+    local fd="$1" sgr="${2:-}" text="$3"
+    if [[ -n "$sgr" ]] && color_enabled "$fd"; then
+        printf '\033[%sm%s\033[0m' "$sgr" "$text"
+    else
+        printf '%s' "$text"
+    fi
+}
+
 # @description Compone el segmento "[n/T] [barra] nombre" de la etapa en curso, sin el tiempo,
 # para componer tanto la barra viva como el cierre de la etapa.
 # La barra tiene 20 celdas: "=" para las ya contadas, ">" para la etapa en curso y espacios para las restantes.
@@ -186,12 +225,25 @@ bar_finalize() {
 log() {
     local level="$1"
     shift
-    local line
-    line="$(date '+%Y-%m-%d %H:%M:%S') [$level] $*"
+    local ts code="" line shown
+    ts="$(date '+%Y-%m-%d %H:%M:%S')"
+    line="$ts [$level] $*"
     if [[ -n "${VBOXDISK_LOG_FILE:-}" ]]; then
         printf '%s\n' "$line" >>"$VBOXDISK_LOG_FILE"
     fi
-    emit_line "$line"
+    # En terminal el sello va tenue y el nivel pinta según su gravedad; en la
+    # bitácora queda siempre la línea plana, que es la que se busca con grep.
+    if color_enabled 2; then
+        case "$level" in
+            ERROR) code=31 ;;
+            WARN) code=33 ;;
+            *) code=36 ;;
+        esac
+        shown="$(colorize 2 2 "$ts") $(colorize 2 "$code" "[$level]") $*"
+    else
+        shown="$line"
+    fi
+    emit_line "$shown"
 }
 
 # @description Conserva la salida cruda de un comando externo (el chatter del hipervisor) en la
@@ -260,7 +312,7 @@ read_answer() {
     fi
     if [[ -t 0 ]]; then
         bar_suspend
-        printf '%s ' "$prompt" >&2
+        printf '%s ' "$(colorize 2 1 "$prompt")" >&2
         # shellcheck disable=SC2162  # flags siempre lleva -r, con o sin eco.
         if ! IFS= read "${flags[@]}" answer; then
             if [[ "$silent" == "1" ]]; then
@@ -280,7 +332,7 @@ read_answer() {
         return 1
     fi
     bar_suspend
-    printf '%s ' "$prompt" >&2
+    printf '%s ' "$(colorize 2 1 "$prompt")" >&2
     # shellcheck disable=SC2162  # flags siempre lleva -r, con o sin eco.
     if ! IFS= read "${flags[@]}" answer; then
         if [[ "$silent" == "1" ]]; then
@@ -525,13 +577,16 @@ stage_begin() {
 #  duración en segundos.
 # @exitcode 0 Siempre; el código recibido solo clasifica el resumen.
 stage_end() {
-    local rc="${1:-0}" dur word
+    local rc="${1:-0}" dur word code
     dur=$(($(now_s) - VBOXDISK_STAGE_T0))
     if ((rc == 0)); then
         word="listo"
+        code=32
     else
         word="fallida"
+        code=31
     fi
+    word="$(colorize 2 "$code" "$word")"
     if ((VBOXDISK_STAGE_PAINTED == 1)); then
         printf '\r\033[K%s %s (%ds)\n' \
             "$(bar_segment)" "$word" "$dur" >&2

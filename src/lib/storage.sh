@@ -591,11 +591,11 @@ storage_disk_changes() {
 # @description Plan de la verificacion declarativa en el host, sin tocar la
 # maquina (usado por --dry-run). No escribe en state.lock.
 # @arg $1 string Nombre de la vm, declarada o no en el archivo declarativo.
-# @stdout Una unica linea "<vm>: <plan> (estado actual: <potencia>)"; el plan lleva entre parentesis el detalle de los discos cuando lo hay.
+# @stdout Una unica linea "<vm>: <plan> (estado actual: <potencia>)"; el plan lleva entre parentesis el detalle de los discos cuando lo hay. En terminal el nombre de la vm va en negrita y el plan pinta verde si no hay nada que hacer y amarillo si anuncia trabajo pendiente; redirigido o sin terminal sale plano.
 storage_plan_vm() {
     local vm="$1"
     local desired stored fp stored_fp power disk file size fstate cambios cap
-    local plan extra="" orphans=0 declared_vm=1
+    local plan extra="" orphans=0 declared_vm=1 color=""
     local -a details=()
     cfg_vms | grep -Fxq "$vm" || declared_vm=0
     desired="$(storage_desired_hash "$vm")"
@@ -670,7 +670,14 @@ storage_plan_vm() {
     if [[ -n "$extra" ]]; then
         plan+=" ($extra)"
     fi
-    printf '%s: %s (estado actual: %s)\n' "$vm" "$plan" "$power"
+    # Verde cuando no hay nada que hacer, amarillo cuando anuncia trabajo
+    # pendiente y sin color para lo meramente informativo.
+    case "$plan" in
+        "sin cambios"*) color=32 ;;
+        *pendiente* | *"primera aplicacion"* | *"huella fisica"*) color=33 ;;
+    esac
+    printf '%s: %s (estado actual: %s)\n' \
+        "$(colorize 1 1 "$vm")" "$(colorize 1 "$color" "$plan")" "$power"
 }
 
 # Campos GUEST_*: estado del invitado que deja storage_parse_guest_output

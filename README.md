@@ -134,6 +134,9 @@ vboxdisk <orden> [opciones]
   -y, --yes        omite confirmaciones; ante un disco registrado y ausente
                    del archivo elige eliminarlo
   -h, --help       esta ayuda
+
+  NO_COLOR         cualquier valor apaga el color de la salida
+  VBOXDISK_COLOR   always o never fija el color sin mirar la terminal
 ```
 
 ### Códigos de salida
@@ -155,6 +158,19 @@ vboxdisk <orden> [opciones]
 | `VBOXDISK_IP_TIMEOUT` | espera de dirección IP (60) |
 | `VBOXDISK_GUEST_TIMEOUT` | tiempo máximo del script invitado (300) |
 | `VBOXDISK_STATE_DIR` | cambia la raíz de estado (útil en pruebas) |
+| `NO_COLOR` | cualquier valor apaga el color de la salida |
+| `VBOXDISK_COLOR` | `always` o `never` fija el color sin mirar la terminal |
+
+### Color
+
+La salida se pinta sola cuando escribe en una terminal: el sello de tiempo va
+tenue, el nivel `[INFO]`/`[WARN]`/`[ERROR]` pinta cian, amarillo y rojo, el
+cierre de la etapa `listo`/`fallida` va en verde y rojo, el plan de `--dry-run`
+en negrita y amarillo cuando anuncia trabajo pendiente, y la columna `ESTADO`
+de `status` en verde, amarillo o tenue según el valor. `NO_COLOR` lo apaga,
+`VBOXDISK_COLOR=always` lo obliga y `VBOXDISK_COLOR=never` lo prohíbe, de modo
+que la bitácora y lo que se redirige a un fichero quedan siempre sin secuencias
+de control.
 
 ## Estado y bitácoras
 
@@ -166,7 +182,7 @@ state/<fecha>.log       una bitácora por corrida de apply
 ```
 
 La bitácora recibe la misma línea que sale por `stderr`, con marca de tiempo y
-nivel, más la salida cruda del script invitado:
+nivel pero sin color, más la salida cruda del script invitado:
 
 ```bash
 tail -f "$(ls -t ~/.local/share/vboxdisk/state/*.log | head -1)"
