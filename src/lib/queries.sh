@@ -23,7 +23,10 @@
 # @description Estado de sincronización de la vm contra el archivo declarativo,
 # según la huella registrada en state.lock; cuando difiere, se anotan ademas los
 # campos de cada disco declarado que cambiaron, que son los que un `apply`
-# volveria a converger.
+# volveria a converger. Coincidiendo el hash, aun asi se declara
+# desincronizada si el host conserva trabajo pendiente (discos por crear o
+# adjuntar, medio mas pequeno que lo declarado o disco inactivo), porque es
+# trabajo que apply tambien vuelve a aplicar.
 # @arg $1 string Nombre de la vm.
 # @stdout Una de estas cadenas, sin salto de línea: "sin estado" (sin registro
 #  previo), "sincronizada" o "desincronizada", esta ultima con los cambios en
@@ -33,6 +36,7 @@
 #   vm_sync_status web01  # imprime: sincronizada
 # @see storage_desired_hash()
 # @see storage_disk_changes()
+# @see storage_pending_work()
 vm_sync_status() {
     local vm="$1" desired stored disk corto detalle=""
     desired="$(storage_desired_hash "$vm")"
@@ -42,7 +46,12 @@ vm_sync_status() {
         return 0
     fi
     if [[ "$stored" == "$desired" ]]; then
-        printf 'sincronizada'
+        detalle="$(storage_pending_work "$vm" corto)"
+        if [[ -n "$detalle" ]]; then
+            printf 'desincronizada (%s)' "$detalle"
+        else
+            printf 'sincronizada'
+        fi
         return 0
     fi
     printf 'desincronizada'
@@ -149,6 +158,8 @@ vm_status_ip() {
 #  declarada en el archivo. En terminal la cabecera va en negrita y la celda
 #  de ESTADO pinta según el valor: verde sincronizada, amarillo
 #  desincronizada y tenue sin estado; la bitácora y lo redirigido van planos.
+#  Cada columna se ajusta al ancho de su celda más larga, así que DISCOS y
+#  DIRECCION_IP quedan juntas cuando los valores son cortos.
 # @stderr log_error si falta yq, el archivo no es válido, una vm declarada no
 #  existe en el hipervisor o faltan dependencias del host.
 # @exitcode 0 Tabla impresa.
@@ -156,11 +167,13 @@ vm_status_ip() {
 # @see vm_sync_status()
 cmd_status() {
     validate_config 1
-    # El color se aplica sobre la celda ya rellenada: los códigos de control
-    # no cuentan como ancho y las columnas siguen alineadas.
-    printf '%s\n' \
-        "$(colorize 1 1 "$(printf '%-12s %-32s %-30s %s' "MAQUINA" "ESTADO" "DISCOS" "DIRECCION_IP")")"
+    # Primero se juntan las filas para medir cada columna con su celda más
+    # larga: con anchos fijos DISCOS se quedaba lejos de DIRECCION_IP. El
+    # color se aplica sobre la celda ya rellenada: los códigos de control no
+    # cuentan como ancho y las columnas siguen alineadas.
     local vm estado discos ip code
+    local -a filas=() estados=() discos_col=() ips=() codigos=()
+    local -i w_vm=7 w_est=6 w_dis=6 w_ip=13 i
     while IFS= read -r vm; do
         estado="$(vm_sync_status "$vm")"
         discos="$(vm_status_disks "$vm")"
@@ -170,10 +183,23 @@ cmd_status() {
             desincronizada*) code=33 ;;
             *) code=2 ;;
         esac
-        printf '%-12s %s %-30s %s\n' "$vm" \
-            "$(colorize 1 "$code" "$(printf '%-32s' "$estado")")" \
-            "$discos" "$ip"
+        filas+=("$vm")
+        estados+=("$estado")
+        discos_col+=("$discos")
+        ips+=("$ip")
+        codigos+=("$code")
+        if ((${#vm} > w_vm)); then w_vm=${#vm}; fi
+        if ((${#estado} > w_est)); then w_est=${#estado}; fi
+        if ((${#discos} > w_dis)); then w_dis=${#discos}; fi
+        if ((${#ip} > w_ip)); then w_ip=${#ip}; fi
     done < <(cfg_vms)
+    printf '%s\n' \
+        "$(colorize 1 1 "$(printf '%-*s %-*s %-*s %s' "$w_vm" "MAQUINA" "$w_est" "ESTADO" "$w_dis" "DISCOS" "DIRECCION_IP")")"
+    for i in "${!filas[@]}"; do
+        printf '%-*s %s %-*s %s\n' "$w_vm" "${filas[$i]}" \
+            "$(colorize 1 "${codigos[$i]}" "$(printf '%-*s' "$w_est" "${estados[$i]}")")" \
+            "$w_dis" "${discos_col[$i]}" "${ips[$i]}"
+    done
 }
 
 # @description Última corrida registrada y tabla de particiones de cada disco

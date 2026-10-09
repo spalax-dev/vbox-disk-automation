@@ -59,20 +59,26 @@ storage_disk_file() {
 }
 
 # @description Huella fisica de toda la configuracion de almacenamiento de la
-# maquina: controladores y MAC reportados por showvminfo, mas el fichero y la
-# adjuncion de cada disco declarado (sin VMState, para que la huella de una vm
-# apagada coincida con la registrada). Un disco sin fichero se aporta como
-# "<disco> sin fichero".
+# maquina: controladores y MAC reportados por showvminfo, mas la ruta, la
+# capacidad y la adjuncion de cada disco declarado (sin VMState, para que la
+# huella de una vm apagada coincida con la registrada). El mtime y el tamano
+# del fichero quedan fuera de proposito: los cambia cada escritura del
+# invitado, de modo que incluirlos haria que la huella de una maquina
+# encendida nunca volviera a coincidir con la registrada y el plan anunciara
+# siempre una huella modificada fuera de la solucion; el contenido del disco
+# se huella aparte con storage_disk_fingerprint y queda registrado en
+# state.lock. Un disco sin fichero se aporta como "<disco> sin fichero".
 # @arg $1 string Nombre de la vm en el hipervisor.
 # @stdout sha256 en hexadecimal de 64 caracteres, con salto de linea.
 storage_fingerprint() {
-    local vm="$1" disk file out
+    local vm="$1" disk file out cap
     out="$(VBoxManage showvminfo "$vm" --machinereadable 2>/dev/null |
         grep -E '^(storagecontroller|macaddress)' || true)"
     while IFS= read -r disk; do
         [[ -n "$disk" ]] || continue
         if file="$(storage_disk_file "$vm" "$disk")"; then
-            out+=$'\n'"$(storage_disk_fingerprint "$vm" "$file")"
+            cap="$(storage_medium_capacity "$file" || printf 'sin capacidad')"
+            out+=$'\n'"$file"$'\n'"$cap"$'\n'"$(storage_attachment "$vm" "$file")"
         else
             out+=$'\n'"$disk sin fichero"
         fi
@@ -81,10 +87,14 @@ storage_fingerprint() {
 }
 
 # @description Huella fisica de un disco: estado del fichero en el host (mtime y
-# tamano), su ruta y la linea de adjuncion en showvminfo.
+# tamano), su ruta y la linea de adjuncion en showvminfo. Es la huella de
+# contenido que se registra en state.lock como evidencia; la comparacion de la
+# maquina contra lo registrado no pasa por aqui, porque su mtime y su tamano
+# cambian con cada escritura del invitado y usa storage_fingerprint.
 # @arg $1 string Nombre de la vm en el hipervisor.
 # @arg $2 path Ruta del fichero .vdi; si no existe se huella como "ausente".
 # @stdout sha256 en hexadecimal de 64 caracteres, con salto de linea.
+# @see storage_fingerprint()
 storage_disk_fingerprint() {
     local vm="$1" disk="$2" disk_part cfg_part
     disk_part="ausente"
@@ -588,13 +598,95 @@ storage_disk_changes() {
     printf '%s' "$out"
 }
 
+# @description Trabajo pendiente del almacenamiento declarado contra el host:
+# discos que faltan por crear, adjuntar o desprender, capacidades que no
+# coinciden con lo declarado y campos declarados que difieren de lo registrado
+# en state.lock. Solo lo que exige accion: un disco ya adjunto y conforme no
+# anade nada, y los discos registrados ausentes del archivo se cuentan aparte
+# porque son decision del usuario.
+# @arg $1 string Nombre de la vm en el archivo declarativo.
+# @arg $2 string Modo: "largo" (por defecto) con el motivo explicativo; "corto"
+#  con la etiqueta del campo, para la columna ESTADO de status.
+# @stdout Los motivos separados por "; ", sin salto de linea; cadena vacia si no hay trabajo.
+# @exitcode 0 Siempre.
+# @see storage_disk_changes()
+# @see storage_medium_capacity()
+storage_pending_work() {
+    local vm="$1" modo="${2:-largo}"
+    local disk file size fstate cambios cap motivo out=""
+    while IFS= read -r disk; do
+        [[ -n "$disk" ]] || continue
+        fstate="$(cfg_disk_state "$vm" "$disk")"
+        file="$(storage_disk_file "$vm" "$disk" || true)"
+        size="$(cfg_disk_size_mb "$vm" "$disk" || true)"
+        if [[ "$fstate" == "inactive" ]]; then
+            if [[ "$modo" == "corto" ]]; then
+                motivo="$disk: inactivo"
+            else
+                motivo="$disk: se desprendra del hipervisor (disco inactivo)"
+            fi
+            out+="${out:+; }$motivo"
+        elif [[ -z "$file" ]]; then
+            if [[ "$modo" == "corto" ]]; then
+                motivo="$disk: sin fichero"
+            else
+                motivo="$disk: no se conoce el fichero del disco"
+            fi
+            out+="${out:+; }$motivo"
+        elif ! storage_disk_attached "$vm" "$file"; then
+            if [[ -f "$file" ]]; then
+                if [[ "$modo" == "corto" ]]; then
+                    motivo="$disk: sin adjuntar"
+                else
+                    motivo="$disk: se adjuntara el disco existente"
+                fi
+            else
+                if [[ "$modo" == "corto" ]]; then
+                    motivo="$disk: ausente"
+                else
+                    motivo="$disk: se creara y adjuntara el disco de ${size} MB"
+                fi
+            fi
+            out+="${out:+; }$motivo"
+        fi
+        cambios="$(storage_disk_changes "$vm" "$disk" "$modo")"
+        if [[ -n "$cambios" ]]; then
+            if [[ "$modo" == "corto" ]]; then
+                out+="${out:+; }$disk: $cambios"
+            else
+                out+="${out:+; }$disk: declarado difiere del registro: $cambios"
+            fi
+        fi
+        if [[ "$fstate" != "inactive" && -n "$file" && -f "$file" ]] &&
+            cap="$(storage_medium_capacity "$file")" &&
+            [[ "$size" =~ ^[0-9]+$ ]] && ((size > 0)); then
+            if ((size > cap)); then
+                if [[ "$modo" == "corto" ]]; then
+                    motivo="$disk: tamano"
+                else
+                    motivo="$disk: el medio actual es de $cap MB y lo declarado es de $size MB: se ampliara"
+                fi
+                out+="${out:+; }$motivo"
+            elif ((size < cap)); then
+                if [[ "$modo" == "corto" ]]; then
+                    motivo="$disk: tamano"
+                else
+                    motivo="$disk: el medio actual es de $cap MB y lo declarado es de $size MB: no se puede reducir"
+                fi
+                out+="${out:+; }$motivo"
+            fi
+        fi
+    done < <(cfg_disk_keys "$vm" "$VBOXDISK_FILE")
+    printf '%s' "$out"
+}
+
 # @description Plan de la verificacion declarativa en el host, sin tocar la
 # maquina (usado por --dry-run). No escribe en state.lock.
 # @arg $1 string Nombre de la vm, declarada o no en el archivo declarativo.
-# @stdout Una unica linea "<vm>: <plan> (estado actual: <potencia>)"; el plan lleva entre parentesis el detalle de los discos cuando lo hay. En terminal el nombre de la vm va en negrita y el plan pinta verde si no hay nada que hacer y amarillo si anuncia trabajo pendiente; redirigido o sin terminal sale plano.
+# @stdout Una unica linea "<vm>: <plan> (estado actual: <potencia>)"; el plan lleva entre parentesis los motivos de trabajo pendiente y las decisiones de discos registrados, y sin ellos se queda en la sola cabecera. En terminal el nombre de la vm va en negrita y el plan pinta verde si no hay nada que hacer y amarillo si anuncia trabajo pendiente; redirigido o sin terminal sale plano.
 storage_plan_vm() {
     local vm="$1"
-    local desired stored fp stored_fp power disk file size fstate cambios cap
+    local desired stored fp stored_fp power disk pendientes
     local plan extra="" orphans=0 declared_vm=1 color=""
     local -a details=()
     cfg_vms | grep -Fxq "$vm" || declared_vm=0
@@ -604,34 +696,10 @@ storage_plan_vm() {
     stored_fp="$(state_get "$vm" fingerprint || true)"
     power="$(vbox_power_state "$vm" || printf 'desconocido')"
 
-    while IFS= read -r disk; do
-        [[ -n "$disk" ]] || continue
-        file="$(storage_disk_file "$vm" "$disk" || true)"
-        size="$(cfg_disk_size_mb "$vm" "$disk" || true)"
-        fstate="$(cfg_disk_state "$vm" "$disk")"
-        if [[ "$fstate" == "inactive" ]]; then
-            details+=("$disk: se desprendra del hipervisor (disco inactivo)")
-        elif [[ -n "$file" ]] && storage_disk_attached "$vm" "$file"; then
-            details+=("$disk: ya esta adjunto")
-        elif [[ -n "$file" && -f "$file" ]]; then
-            details+=("$disk: se adjuntara el disco existente")
-        else
-            details+=("$disk: se creara y adjuntara el disco de ${size} MB")
-        fi
-        cambios="$(storage_disk_changes "$vm" "$disk" largo)"
-        if [[ -n "$cambios" ]]; then
-            details+=("$disk: declarado difiere del registro: $cambios")
-        fi
-        if [[ "$fstate" != "inactive" && -n "$file" && -f "$file" ]] &&
-            cap="$(storage_medium_capacity "$file")" &&
-            [[ "$size" =~ ^[0-9]+$ ]] && ((size > 0)); then
-            if ((size > cap)); then
-                details+=("$disk: el medio actual es de $cap MB y lo declarado es de $size MB: se ampliara")
-            elif ((size < cap)); then
-                details+=("$disk: el medio actual es de $cap MB y lo declarado es de $size MB: no se puede reducir")
-            fi
-        fi
-    done < <(cfg_disk_keys "$vm" "$VBOXDISK_FILE")
+    pendientes="$(storage_pending_work "$vm")"
+    if [[ -n "$pendientes" ]]; then
+        details+=("$pendientes")
+    fi
 
     while IFS= read -r disk; do
         orphans=$((orphans + 1))
@@ -642,6 +710,9 @@ storage_plan_vm() {
         fi
     done < <(storage_orphan_disks "$vm")
 
+    # El orden es el de aplicacion: la decision del usuario primero, luego el
+    # trabajo del host y solo al final lo que no exige cambio, para que una vm
+    # conforme diga "sin cambios" en lugar de un generico motivo.
     if ((declared_vm == 0)); then
         if ((orphans > 0)); then
             plan="la vm ya no figura en el archivo declarativo; decision pendiente sobre sus discos registrados"
@@ -652,12 +723,14 @@ storage_plan_vm() {
         plan="primera aplicacion: preparar el almacenamiento declarado"
     elif [[ "$desired" != "$stored" ]]; then
         plan="cambios declarados pendientes respecto del ultimo registro"
+    elif ((orphans > 0)); then
+        plan="discos registrados pendientes de decision"
+    elif [[ -n "$pendientes" ]]; then
+        plan="trabajo pendiente en el almacenamiento"
     elif [[ "$fp" != "$stored_fp" ]]; then
         plan="huella fisica modificada fuera de la solucion: se verificara en la vm"
     elif [[ "$power" != "poweroff" ]]; then
-        plan="vm encendida: sondeo de solo lectura y convergencia"
-    elif ((orphans > 0)); then
-        plan="discos registrados pendientes de decision"
+        plan="sin cambios: la vm coincide con lo declarado; solo se verificara el invitado"
     else
         plan="sin cambios: la vm coincide con lo declarado y permanece apagada"
     fi
@@ -758,6 +831,36 @@ guest_restore() {
     GUEST_FSTAB="${GUEST_S_FSTAB[$key]:-}"
     GUEST_TABLE_LINES="${GUEST_S_LINES[$key]:-}"
     GUEST_SIZE_MB="${GUEST_S_SIZE[$key]:-}"
+}
+
+# @description Linea resumen del estado observado en el invitado, para la
+# pantalla y la bitacora: sustituye al volcado clave=valor de emit_state, que
+# solo se registra en la bitacora. Sin corrida terminada o con la salida
+# retenida (ld en vivo) no imprime nada.
+# @arg $1 string Nombre de la vm.
+# @arg $2 string Clave del disco.
+# @stderr log_info con "<vm>/<disco>: <dispositivo> <tamano> MB <fs> montado en <punto> (<tabla>, fstab <si|no>)".
+# @exitcode 0 Siempre.
+# @see storage_parse_guest_output()
+# @see guest_run()
+guest_summary() {
+    local vm="$1" disk="$2" estado tabla fstab
+    if [[ -z "${GUEST_EXIT:-}" || -n "${VBOXDISK_GUEST_QUIET:-}" ]]; then
+        return 0
+    fi
+    if [[ "$GUEST_MOUNTED" == "yes" && -n "$GUEST_MOUNTPOINT" ]]; then
+        estado="montado en $GUEST_MOUNTPOINT"
+    else
+        estado="sin montar"
+    fi
+    tabla="${GUEST_TABLE:-sin tabla}"
+    if [[ "$GUEST_FSTAB" == "yes" ]]; then
+        fstab="fstab si"
+    else
+        fstab="fstab no"
+    fi
+    log_info "$vm/$disk: ${GUEST_DEVICE:-sin dispositivo} ${GUEST_SIZE_MB:-?} MB ${GUEST_FSTYPE:-sin ficheros} $estado ($tabla, $fstab)"
+    return 0
 }
 
 # @description Extrae los pares clave=valor y la tabla de la salida del script

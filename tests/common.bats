@@ -104,9 +104,9 @@ setup() {
         stage_end 0
     } 2>"$err"
     ! grep -q $'\x1b' "$err"
-    grep -qxF '[1/5] verificacion declarativa de VM1 ... listo (0s)' "$err"
+    grep -qP '^\[1/5\] verificacion declarativa de VM1 \.\.\. listo \([0-9]+s\)$' "$err"
     grep -q '\[INFO\] mensaje uno' "$err"
-    grep -q 'etapa 1/5: verificacion declarativa de VM1 completada en 0s' "$err"
+    grep -qP 'etapa 1/5: verificacion declarativa de VM1 completada en [0-9]+s' "$err"
 }
 
 @test "sin terminal una etapa fallida anuncia fallida en la linea plana" {

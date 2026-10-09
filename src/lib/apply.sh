@@ -190,17 +190,23 @@ guest_disk_args() {
 
 # @description Una ejecucion del script invitado dentro de la sesion abierta.
 # El fichero de credenciales se vuelve a copiar en cada corrida, porque el
-# script lo destruye al terminar; la salida queda en la bitacora y los campos
-# GUEST_* analizados para el disco que acaba de correr.
+# script lo destruye al terminar; la salida queda siempre en la bitacora y los
+# campos GUEST_* analizados para el disco que acaba de correr. En pantalla solo
+# pasan las notas "guest_ensure: " del propio script: el volcado clave=valor de
+# emit_state y la salida de las herramientas (sfdisk, partx, resize2fs) se
+# quedan registrados, y se imprimen completos cuando algo fallo, para que el
+# motivo se vea sin abrir la bitacora. Con VBOXDISK_GUEST_QUIET no sale nada,
+# como antes.
 # @arg $1 string Nombre de la vm.
 # @arg $@ array Resto de argumentos del script invitado (normalmente GUEST_ARGS); se les agrega --passfile.
 # @set GUEST_EXIT string Codigo del script invitado; el resto de campos GUEST_* los rellena storage_parse_guest_output.
-# @stderr Salida del script invitado linea a linea (salvo con VBOXDISK_GUEST_QUIET) y errores o advertencias.
+# @stderr Las notas guest_ensure de la corrida; con fallo, la salida cruda completa; y siempre los errores o advertencias.
 # @exitcode 0 El script invitado termino con la centinela VBOXDISK_EXIT=0.
 # @exitcode 1 Codigo propio distinto de 0 devuelto por el script invitado (VBOXDISK_EXIT).
 # @exitcode 2 VBOXDISK_E_COMM: no se copio la credencial o VBoxManage no ejecuto el script.
 # @exitcode 3 VBOXDISK_E_STORAGE: la salida no contiene la centinela VBOXDISK_EXIT.
 # @see storage_parse_guest_output()
+# @see guest_emit_raw()
 guest_run() {
     local vm="$1"
     shift
@@ -220,7 +226,7 @@ guest_run() {
         if [[ -n "${VBOXDISK_LOG_FILE:-}" ]]; then
             printf '%s\n' "$line" >>"$VBOXDISK_LOG_FILE"
         fi
-        if [[ -z "${VBOXDISK_GUEST_QUIET:-}" ]]; then
+        if [[ -z "${VBOXDISK_GUEST_QUIET:-}" && "$line" == "guest_ensure: "* ]]; then
             emit_line "$line"
         fi
     done <<<"$out"
@@ -228,6 +234,7 @@ guest_run() {
     storage_parse_guest_output "$out"
 
     if [[ -z "$GUEST_EXIT" ]]; then
+        guest_emit_raw "$out"
         if ((vb_rc != 0)); then
             log_error "$vm: Guest Control no ejecuto el script invitado (VBoxManage rc=$vb_rc)"
             return "$VBOXDISK_E_COMM"
@@ -237,12 +244,33 @@ guest_run() {
     fi
     if [[ "$GUEST_EXIT" != "0" ]]; then
         # En modo silencioso quien invoca informa disco a disco, de modo que
-        # la advertencia general solo se emite cuando la salida no esta retenida.
+        # ni la salida retenida ni la advertencia general se emiten aqui.
         if [[ -z "${VBOXDISK_GUEST_QUIET:-}" ]]; then
+            guest_emit_raw "$out"
             log_warn "$vm: el script invitado termino con codigo $GUEST_EXIT"
         fi
         return "$GUEST_EXIT"
     fi
+    return 0
+}
+
+# @description Pasa al terminal la salida cruda retenida de una corrida del
+# invitado, la de emit_state y la de las herramientas, que en una corrida
+# correcta solo se queda en la bitacora. Las notas "guest_ensure: " ya
+# pasaron al leerla y no se repiten; con la salida retenida no imprime nada.
+# @arg $1 string Salida completa de la corrida, multilinea.
+# @stderr La salida con salto de linea, sin las notas guest_ensure.
+# @exitcode 0 Siempre.
+# @see guest_run()
+guest_emit_raw() {
+    local line
+    if [[ -n "${VBOXDISK_GUEST_QUIET:-}" ]]; then
+        return 0
+    fi
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" == "guest_ensure: "* ]] && continue
+        emit_line "$line"
+    done <<<"$1"
     return 0
 }
 
@@ -287,12 +315,18 @@ apply_vm() {
     # Etapa 1: verificacion declarativa y preparacion del host.
     cfg_vms | grep -Fxq "$vm" || declared_vm=0
     stage_begin 1 "verificacion declarativa de $vm"
+    # Sin trabajo pendiente en el host no hay nada que converger: apagada la
+    # maquina se despide aqui mismo y encendida se anuncia, porque el sondeo
+    # del invitado sigue siendo el que detecta la deriva.
     if ((declared_vm)) &&
         [[ -n "$stored" && "$stored" == "$desired" && "$fp" == "$stored_fp" &&
-            "$power" == "poweroff" && ${#orphans[@]} -eq 0 ]]; then
-        stage_end
-        log_info "$vm: sin cambios; la maquina coincide con lo declarado y permanece apagada"
-        return 0
+            ${#orphans[@]} -eq 0 ]] && [[ -z "$(storage_pending_work "$vm")" ]]; then
+        if [[ "$power" == "poweroff" ]]; then
+            stage_end
+            log_info "$vm: sin cambios; la maquina coincide con lo declarado y permanece apagada"
+            return 0
+        fi
+        log_info "$vm: sin cambios; la maquina coincide con lo declarado y la corrida solo verificara el invitado"
     fi
 
     # Discos registrados que el archivo ya no declara: la decision del usuario
@@ -496,6 +530,7 @@ apply_vm() {
             stage_end "$rc"
             return "$rc"
         fi
+        guest_summary "$vm" "$disk"
     done
     guest_session_close "$vm"
     stage_end

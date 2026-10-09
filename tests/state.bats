@@ -82,6 +82,34 @@ setup() {
     [[ "$a" =~ ^[0-9a-f]{64}$ ]]
 }
 
+@test "la huella de la maquina no cambia si solo cambia el contenido del disco" {
+    # El invitado escribe mientras la maquina corre y el fichero crece: eso no
+    # es un cambio de la huella fisica y no debe anunciarlo el plan.
+    local disk="$BATS_TEST_TMPDIR/disk1.vdi" a b c
+    printf '4096\n' >"$disk"
+    export VBOXDISK_FILE="$BATS_TEST_TMPDIR/vdisk.yml"
+    printf '%s\n' \
+        'VM1:' \
+        '  vm_user: debian' \
+        '  vm_pass: "secreto"' \
+        '  disks:' \
+        '    disk1:' \
+        '      size: 4096' \
+        '      fs_type: ext4' \
+        '      mount_point: /mnt/datos' \
+        '      label: datos-vm1' \
+        "      file: $disk" \
+        >"$VBOXDISK_FILE"
+    a="$(storage_fingerprint VM1)"
+    printf ' mas bytes del invitado' >>"$disk"
+    b="$(storage_fingerprint VM1)"
+    [ "$a" = "$b" ]
+    # La capacidad si es huella fisica: cambiarla cambia la huella.
+    printf '8192\n' >"$disk"
+    c="$(storage_fingerprint VM1)"
+    [ "$a" != "$c" ]
+}
+
 @test "state_disk_keys lista los discos registrados en orden" {
     state_set_vm VM1 "disks.disk1.state=active" "disks.disk2.state=active" "ip=192.168.1.16"
     [ "$(state_disk_keys VM1 | tr '\n' ' ')" = "disk1 disk2 " ]

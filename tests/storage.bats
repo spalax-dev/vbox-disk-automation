@@ -282,6 +282,35 @@ setup() {
     [ "$a" != "$b" ]
 }
 
+@test "storage_pending_work lista el trabajo del host y se vacia sin nada" {
+    local disk="$BATS_TEST_TMPDIR/disk1.vdi"
+    export VBOXDISK_FILE="$BATS_TEST_TMPDIR/vdisk.yml"
+    printf '%s\n' \
+        'VM1:' \
+        '  vm_user: debian' \
+        '  vm_pass: "secreto"' \
+        '  disks:' \
+        '    disk1:' \
+        '      size: 4096' \
+        '      fs_type: ext4' \
+        '      mount_point: /mnt/datos' \
+        '      label: datos-vm1' \
+        "      file: $disk" \
+        >"$VBOXDISK_FILE"
+    # Sin fichero ni adjuncion falta crear y adjuntar.
+    [ "$(storage_pending_work VM1)" = "disk1: se creara y adjuntara el disco de 4096 MB" ]
+    [ "$(storage_pending_work VM1 corto)" = "disk1: ausente" ]
+    # Creado, adjunto y conforme: no hay nada que aplicar.
+    printf '4096\n' >"$disk"
+    printf '%s\n' "$disk" >"$VBOXDISK_MOCK_STATE"
+    [ -z "$(storage_pending_work VM1)" ]
+    [ -z "$(storage_pending_work VM1 corto)" ]
+    # Un medio mas pequeno que lo declarado vuelve a ser trabajo pendiente.
+    printf '2048\n' >"$disk"
+    [ "$(storage_pending_work VM1)" = "disk1: el medio actual es de 2048 MB y lo declarado es de 4096 MB: se ampliara" ]
+    [ "$(storage_pending_work VM1 corto)" = "disk1: tamano" ]
+}
+
 @test "storage_medium_capacity lee la capacidad fijada al crear el medio" {
     local disk="$BATS_TEST_TMPDIR/VM1-datos.vdi"
     run VBoxManage createmedium disk --filename "$disk" --size 4096 --format VDI

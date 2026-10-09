@@ -298,11 +298,17 @@ sync_env() {
     export VBOXDISK_COLOR=always
     run "$ENTRY" status -f "$FIX/valid.yml"
     [ "$status" -eq 0 ]
-    [[ "$output" == *$'\x1b[1mMAQUINA'* ]]
-    [[ "$output" == *$'\x1b[2msin estado'* ]]
-    # El color envuelve la celda ya rellenada: los espacios de relleno quedan
-    # dentro de la secuencia y la columna siguiente no se corre.
-    grep -qP '\x1b\[2msin estado +\x1b\[0m' <<<"$output"
+    local con_color="$output"
+    [[ "$con_color" == *$'\x1b[1mMAQUINA'* ]]
+    [[ "$con_color" == *$'\x1b[2msin estado'* ]]
+    # El color envuelve la celda ya rellenada y no ensancha nada: quitando
+    # las secuencias, la tabla es exactamente la que imprime sin color y las
+    # columnas siguen cuadriculadas.
+    [[ "$con_color" == *$'\x1b[2msin estado'*$'\x1b[0m '* ]]
+    export VBOXDISK_COLOR=never
+    run "$ENTRY" status -f "$FIX/valid.yml"
+    [ "$status" -eq 0 ]
+    [ "$(sed 's/\x1b\[[0-9;]*m//g' <<<"$con_color")" = "$output" ]
 }
 
 @test "apply --dry-run pinta el plan en terminal" {
@@ -515,6 +521,25 @@ tamano_env() {
     fi
 }
 
+# Ademas de tamano_env deja la vm conforme: el disco declarado queda adjunto y
+# el registro guarda el hash declarativo y la huella fisica actuales, de modo
+# que plan y estado solo pueden culpar a un cambio real de lo declarado o del
+# medio.
+conforme_env() {
+    tamano_env "$@"
+    export VBOXDISK_MOCK_STATE="$BATS_TEST_TMPDIR/adjuntos"
+    printf '%s\n' "$BATS_TEST_TMPDIR/disk1.vdi" >"$VBOXDISK_MOCK_STATE"
+    source "$REPO/src/lib/common.sh"
+    source "$REPO/src/lib/config.sh"
+    source "$REPO/src/lib/state.sh"
+    source "$REPO/src/lib/vbox.sh"
+    source "$REPO/src/lib/storage.sh"
+    printf '%s\n' \
+        "desired_hash=$(storage_desired_hash VM1)" \
+        "fingerprint=$(storage_fingerprint VM1)" \
+        >>"$VBOXDISK_STATE_DIR/state.lock"
+}
+
 @test "apply --dry-run senala el medio pequeno y el disco que cambio" {
     tamano_env 8192 4096
     run "$ENTRY" apply --dry-run -f "$VBOXDISK_FILE"
@@ -534,6 +559,35 @@ tamano_env() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"disk1: el medio actual es de 8192 MB y lo declarado es de 4096 MB: no se puede reducir"* ]]
     [ "$(cat "$BATS_TEST_TMPDIR/disk1.vdi")" = "8192" ]
+}
+
+@test "apply --dry-run dice sin cambios cuando la vm conforme esta encendida" {
+    conforme_env 4096 4096
+    export VBOXDISK_MOCK_VMSTATE=running
+    run "$ENTRY" apply --dry-run -f "$VBOXDISK_FILE"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"VM1: sin cambios: la vm coincide con lo declarado; solo se verificara el invitado"* ]]
+    [[ "$output" == *"(estado actual: running)"* ]]
+    [[ "$output" != *"huella fisica"* ]]
+    [[ "$output" != *"trabajo pendiente"* ]]
+    unset VBOXDISK_MOCK_VMSTATE
+}
+
+@test "apply --dry-run anuncia el trabajo del host sin culpar a la huella" {
+    conforme_env 4096 2048
+    run "$ENTRY" apply --dry-run -f "$VBOXDISK_FILE"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"trabajo pendiente en el almacenamiento"* ]]
+    [[ "$output" == *"el medio actual es de 2048 MB y lo declarado es de 4096 MB: se ampliara"* ]]
+    [[ "$output" != *"huella fisica"* ]]
+    [[ "$output" != *"primera aplicacion"* ]]
+}
+
+@test "status declara desincronizada cuando el medio se queda detras del hash" {
+    conforme_env 4096 2048
+    run "$ENTRY" status -f "$VBOXDISK_FILE"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"desincronizada (disk1: tamano)"* ]]
 }
 
 @test "apply amplia el medio declarado y registra el tamano nuevo" {
@@ -587,4 +641,67 @@ tamano_env() {
     run "$ENTRY" status -f "$VBOXDISK_FILE"
     [ "$status" -eq 0 ]
     [[ "$output" == *"desincronizada (disk1: tamano)"* ]]
+}
+
+@test "apply deja el volcado del invitado en la bitacora y muestra el resumen" {
+    tamano_env 8192 4096
+    export VBOXDISK_MOCK_LOG="$BATS_TEST_TMPDIR/mock.log"
+    export VBOXDISK_MOCK_STATE="$BATS_TEST_TMPDIR/adjuntos"
+    export VBOXDISK_MOCK_IP=192.168.1.16
+    export VBOXDISK_MOCK_GA_VERSION=7.2.18
+    export GUEST_SCRIPT="$REPO/src/lib/guest_ensure.sh"
+    unset VBOXDISK_MOCK_VMSTATE VBOXDISK_ASSUME_YES 2>/dev/null || true
+    source "$REPO/src/lib/common.sh"
+    source "$REPO/src/lib/config.sh"
+    source "$REPO/src/lib/state.sh"
+    source "$REPO/src/lib/vbox.sh"
+    source "$REPO/src/lib/storage.sh"
+    source "$REPO/src/lib/apply.sh"
+    # common.sh borra la variable al cargarse, por eso se fija despues.
+    export VBOXDISK_LOG_FILE="$BATS_TEST_TMPDIR/corrida.log"
+    run apply_vm VM1
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"DEVICE="* ]]
+    [[ "$output" != *"TABLE_LINE="* ]]
+    [[ "$output" == *"VM1/disk1: /dev/sdb 8192 MB ext4 montado en /mnt/datos (gpt, fstab si)"* ]]
+    grep -q '^DEVICE=/dev/sdb$' "$VBOXDISK_LOG_FILE"
+    grep -q '^VBOXDISK_EXIT=0$' "$VBOXDISK_LOG_FILE"
+}
+
+@test "apply imprime la salida cruda del invitado cuando la corrida falla" {
+    tamano_env 4096 4096
+    export VBOXDISK_MOCK_LOG="$BATS_TEST_TMPDIR/mock.log"
+    export VBOXDISK_MOCK_STATE="$BATS_TEST_TMPDIR/adjuntos"
+    export VBOXDISK_MOCK_IP=192.168.1.16
+    export VBOXDISK_MOCK_GA_VERSION=7.2.18
+    export VBOXDISK_MOCK_PROBE_EXIT=3
+    export GUEST_SCRIPT="$REPO/src/lib/guest_ensure.sh"
+    unset VBOXDISK_MOCK_VMSTATE VBOXDISK_ASSUME_YES 2>/dev/null || true
+    source "$REPO/src/lib/common.sh"
+    source "$REPO/src/lib/config.sh"
+    source "$REPO/src/lib/state.sh"
+    source "$REPO/src/lib/vbox.sh"
+    source "$REPO/src/lib/storage.sh"
+    source "$REPO/src/lib/apply.sh"
+    run apply_vm VM1
+    [ "$status" -eq 3 ]
+    [[ "$output" == *"guest_ensure: no se identifico ningun disco"* ]]
+    [[ "$output" == *"VBOXDISK_EXIT=3"* ]]
+    [[ "$output" == *"termino con codigo 3"* ]]
+    [[ "$output" != *"convergencia verificada"* ]]
+}
+
+@test "apply anuncia sin cambios cuando la vm conforme sigue encendida" {
+    conforme_env 4096 4096
+    export VBOXDISK_MOCK_VMSTATE=running
+    export VBOXDISK_MOCK_LOG="$BATS_TEST_TMPDIR/mock.log"
+    export VBOXDISK_MOCK_IP=192.168.1.16
+    export VBOXDISK_MOCK_GA_VERSION=7.2.18
+    export GUEST_SCRIPT="$REPO/src/lib/guest_ensure.sh"
+    source "$REPO/src/lib/apply.sh"
+    run apply_vm VM1
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"sin cambios; la maquina coincide con lo declarado y la corrida solo verificara el invitado"* ]]
+    [[ "$output" == *"convergencia verificada"* ]]
+    unset VBOXDISK_MOCK_VMSTATE
 }
