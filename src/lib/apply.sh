@@ -23,6 +23,13 @@
 VBOXDISK_SESSION_DIR=""
 VBOXDISK_SESSION_PASS=""
 
+# Credenciales pedidas en la corrida para una vm que el archivo declarativo ya
+# no declara: state.lock no guarda secretos y el bloque de la vm desaparecio,
+# de modo que solo existen en memoria y solo hasta que la sesion se abre.
+VBOXDISK_CRED_USER=""
+VBOXDISK_CRED_PASS=""
+VBOXDISK_CRED_PASSFILE=""
+
 # @description Ejecuta la orden apply: valida la configuracion, aplica
 # --dry-run o recorre las vm una a una y agrega al final el codigo de mayor
 # severidad de la corrida. Nunca retorna: siempre termina con exit.
@@ -84,29 +91,46 @@ cmd_apply() {
 # temporal y copia unica del script invitado para todas las corridas de la
 # maquina. Deja ademas la vm en VBOXDISK_CURRENT_VM, que es de donde
 # vbox_guest_cleanup_all toma el destino de la limpieza si la corrida termina
-# sin cerrar la sesion.
+# sin cerrar la sesion. Las credenciales pedidas a la terminal por
+# guest_credentials_ask mandan sobre las del archivo, porque solo existen
+# cuando ese archivo ya no declara la maquina.
 # @arg $1 string Nombre de la vm.
 # @set VBOXDISK_CURRENT_VM string Vm en curso, para vbox_guest_cleanup_all.
 # @set VBOXDISK_GUEST_USER string Usuario del invitado, para vbox_guest_run.
 # @set VBOXDISK_GUEST_PASSFILE string Fichero de credenciales, para vbox_guest_run.
 # @set VBOXDISK_SESSION_DIR string Directorio temporal creado en el invitado.
 # @set VBOXDISK_SESSION_PASS string Fichero de credenciales en el host.
-# @stderr Errores si Guest Control no acepta sesiones o la copia falla.
+# @stderr Errores si faltan las credenciales, Guest Control no acepta sesiones o la copia falla.
 # @exitcode 0 Sesion preparada.
-# @exitcode 2 VBOXDISK_E_COMM: sin sesion del invitado o copia fallida.
+# @exitcode 2 VBOXDISK_E_COMM: sin credenciales, sin sesion del invitado o copia fallida.
+# @see guest_credentials_ask()
 guest_session_open() {
     local vm="$1" user pass_raw passfile guest_dir i
     # shellcheck disable=SC2034  # la lee vbox_guest_cleanup_all en vbox.sh.
     VBOXDISK_CURRENT_VM="$vm"
-    user="$(cfg_get "$vm" vm_user)"
-    pass_raw="$(cfg_get "$vm" vm_pass)"
+    if [[ -n "${VBOXDISK_CRED_USER:-}" ]]; then
+        user="$VBOXDISK_CRED_USER"
+        pass_raw="$VBOXDISK_CRED_PASS"
+        passfile="$VBOXDISK_CRED_PASSFILE"
+    else
+        user="$(cfg_get "$vm" vm_user)"
+        pass_raw="$(cfg_get "$vm" vm_pass)"
+        passfile=""
+    fi
     if [[ -n "$pass_raw" ]]; then
         passfile="$(mktemp "${TMPDIR:-/tmp}/vboxdisk.pass.XXXXXX")"
         chmod 600 "$passfile"
         printf '%s\n' "$pass_raw" >"$passfile"
         register_tmp "$passfile"
-    else
+    elif [[ -z "$passfile" ]]; then
         passfile="$(cfg_get "$vm" vm_pass_file)"
+    fi
+    # Sin credencial no se reintentan sesiones que no van a abrirse: el motivo
+    # se dice aqui, en vez del aviso generico de la etapa.
+    if [[ -z "$user" || -z "$passfile" ]]; then
+        log_error "$vm: no hay credenciales para abrir la sesion con el invitado"
+        log_info "$vm: declare la maquina en $VBOXDISK_FILE o exporte VBOXDISK_VM_USER y VBOXDISK_VM_PASS"
+        return "$VBOXDISK_E_COMM"
     fi
     # shellcheck disable=SC2034  # las lee vbox_guest_run en vbox.sh.
     VBOXDISK_GUEST_USER="$user"
@@ -148,6 +172,37 @@ guest_session_close() {
     vbox_guest_rm "$1" "$VBOXDISK_SESSION_DIR"
     vbox_guest_untrack_dir "$VBOXDISK_SESSION_DIR"
     VBOXDISK_SESSION_DIR=""
+    return 0
+}
+
+# @description Resuelve con que credencial abrir sesion con el invitado de una
+# vm que el archivo declarativo ya no declara. state.lock no guarda secretos y
+# el bloque de la vm desaparecio del fichero, de modo que, si ni el archivo ni
+# el entorno ofrecen ninguna, se piden al usuario con la misma consulta que
+# usa la sincronizacion, pero sin escribir el archivo: valen para la corrida en
+# curso.
+# @arg $1 string Nombre de la vm.
+# @set VBOXDISK_CRED_USER string Usuario con el que abrir la sesion; vacio si manda el archivo.
+# @set VBOXDISK_CRED_PASS string Contrasena en claro; vacia cuando la credencial es un fichero.
+# @set VBOXDISK_CRED_PASSFILE string Ruta del fichero con la contrasena; vacia si se pidio en claro.
+# @stderr El prompt de cada dato y los registros de respuestas incompletas.
+# @exitcode 0 Credencial resuelta: la del archivo, la del entorno o la pedida al usuario.
+# @exitcode 4 Cancelada: sin terminal, lectura interrumpida (VBOXDISK_E_CANCEL).
+# @see sync_credentials()
+# @see guest_session_open()
+guest_credentials_ask() {
+    local vm="$1"
+    VBOXDISK_CRED_USER=""
+    VBOXDISK_CRED_PASS=""
+    VBOXDISK_CRED_PASSFILE=""
+    if [[ -n "$(cfg_get "$vm" vm_user)" ]] &&
+        [[ -n "$(cfg_get "$vm" vm_pass)$(cfg_get "$vm" vm_pass_file)" ]]; then
+        return 0
+    fi
+    sync_credentials "$vm" || return $?
+    VBOXDISK_CRED_USER="$SYNC_USER"
+    VBOXDISK_CRED_PASS="$SYNC_PASS"
+    VBOXDISK_CRED_PASSFILE="$SYNC_PASSFILE"
     return 0
 }
 
@@ -274,13 +329,46 @@ guest_emit_raw() {
     return 0
 }
 
+# @description Corrige en state.lock el tamano registrado de un disco cuando el
+# hipervisor reporta otro. El registro describe el medio y no la intencion de la
+# ultima corrida: una ampliacion deja de ser cierta en cuanto se produce y una
+# falla posterior en la corrida no vuelve a escribirlo, de modo que el tamano
+# guardado deja de existir. Ese tamano es ademas el que la sincronizacion
+# importa al archivo declarativo, y declarar uno menor que el medio no se puede
+# aplicar: VirtualBox rechaza reducir un medio. Se corrige en cuanto se observa
+# la capacidad, y no al final de la corrida, para que ninguna falla conserve un
+# registro que contradiga al hipervisor.
+# @arg $1 string Nombre de la vm.
+# @arg $2 string Clave del disco.
+# @arg $3 path Fichero del medio en el host.
+# @stderr log_info cuando el registro cambia; el resto de los casos son mudos.
+# @exitcode 0 Siempre: sin lectura posible el registro se conserva como esta.
+# @see storage_medium_capacity()
+# @see state_update_vm()
+record_medium_size() {
+    local vm="$1" disk="$2" file="$3"
+    local cap stored
+    [[ -n "$vm" && -n "$disk" && -n "$file" && -f "$file" ]] || return 0
+    cap="$(storage_medium_capacity "$file" || true)"
+    [[ "$cap" =~ ^[0-9]+$ ]] || return 0
+    stored="$(state_get_disk "$vm" "$disk" size_mb || true)"
+    # Solo se corrige un registro existente: inventar la clave de un disco que
+    # nunca se registro dejaria una seccion incompleta en state.lock.
+    [[ -n "$stored" && "$stored" != "$cap" ]] || return 0
+    state_update_vm "$vm" "disks.$disk.size_mb=$cap"
+    log_info "$vm/$disk: el medio mide $cap MB y el registro guardaba $stored MB; se corrige el registro"
+    return 0
+}
+
 # @description Aplica a una vm las cinco etapas de la Subseccion del algoritmo:
 # verificacion declarativa, disponibilidad, direccion IP, preparacion del
 # almacenamiento en el invitado y verificacion con registro en state.lock.
 # Discos registrados ausentes del archivo se resuelven antes de la primera
 # etapa con [e]liminar, [i]nactivar, [s]incronizar (el archivo vuelve a
 # recoger lo que el estado registra, con las credenciales que se pidan) u
-# [o]mitir.
+# [o]mitir. Las decisiones que retiran el montaje necesitan entrar en el
+# invitado, y como una vm ausente ya no declara credenciales, se piden en la
+# misma etapa con guest_credentials_ask.
 # @arg $1 string Nombre de la vm.
 # @stderr Registro de cada etapa, avisos y preguntas de confirmacion.
 # @exitcode 0 Sin cambios o convergencia verificada y registrada.
@@ -289,6 +377,7 @@ guest_emit_raw() {
 # @exitcode 3 VBOXDISK_E_STORAGE: fallo de almacenamiento o verificacion.
 # @exitcode 4 VBOXDISK_E_CANCEL: decision o confirmacion rechazada por el usuario.
 # @see guest_session_open()
+# @see guest_credentials_ask()
 # @see confirm_choice()
 # @see cfg_sync_commit()
 # @see storage_disk_changes()
@@ -299,6 +388,11 @@ apply_vm() {
     local -a declared=() orphans=() todo_active=() todo_release=() todo_delete=()
     local -a todo_sync=()
     local -a kv=()
+
+    # Las credenciales pedidas son por vm: no se arrastran de la anterior.
+    VBOXDISK_CRED_USER=""
+    VBOXDISK_CRED_PASS=""
+    VBOXDISK_CRED_PASSFILE=""
 
     desired="$(storage_desired_hash "$vm")"
     stored="$(state_get "$vm" desired_hash || true)"
@@ -374,6 +468,10 @@ apply_vm() {
         fi
         if ((rc == 0)); then
             for disk in "${todo_sync[@]}"; do
+                # Antes de declarar: lo que se importa del registro tiene que
+                # seguir describiendo al medio, o el archivo quedaria con un
+                # tamano que la verificacion rechazaria despues.
+                record_medium_size "$vm" "$disk" "$(state_get_disk "$vm" "$disk" file || true)"
                 cfg_sync_disk "$vm" "$disk" || {
                     rc=$?
                     break
@@ -412,6 +510,19 @@ apply_vm() {
         return 0
     fi
 
+    # La vm va a entrar en el invitado para retirar sus montajes y el archivo
+    # ya no declara ni su usuario ni su contrasena: se piden ahora, en la misma
+    # etapa y antes de preparar nada, para que el resto de la corrida no vuelva
+    # a interrumpirse por una sesion que no puede abrirse.
+    if ((declared_vm == 0)) && ((${#todo_release[@]} > 0)); then
+        rc=0
+        guest_credentials_ask "$vm" || rc=$?
+        if ((rc != 0)); then
+            stage_end "$rc"
+            return "$rc"
+        fi
+    fi
+
     for disk in "${declared[@]}"; do
         fstate="$(cfg_disk_state "$vm" "$disk")"
         if [[ "$fstate" == "inactive" ]]; then
@@ -432,7 +543,13 @@ apply_vm() {
         if [[ -n "$cambios" ]]; then
             log_info "$vm/$disk: declarado difiere del registro: $cambios"
         fi
+        # Antes: si el medio cambio por fuera desde la ultima corrida, el
+        # registro se corrige aunque la comprobacion siguiente lo rechace.
+        record_medium_size "$vm" "$disk" "$file"
         storage_ensure_medium "$vm" "$file" "$size" || rc=$?
+        # Despues: esta corrida pudo ampliar el medio, y hasta aqui no lo
+        # refleja ningun registro.
+        record_medium_size "$vm" "$disk" "$file"
         if ((rc != 0)); then
             stage_end "$rc"
             return "$rc"

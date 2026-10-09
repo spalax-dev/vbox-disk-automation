@@ -239,6 +239,17 @@ case "${1:-}" in
                 --probe) probe=1 ;;
             esac
         done
+        # Como el hipervisor: sin usuario o sin un fichero de contrasena
+        # legible no se despacha la suborden. Es lo que deja en evidencia una
+        # vm que el archivo declarativo ya no declara y cuyas credenciales
+        # nadie pidio.
+        usuario="$(argumento --username "" "$@")"
+        clave="$(argumento --passwordfile "" "$@")"
+        if [[ -z "$usuario" || -z "$clave" || ! -r "$clave" ]]; then
+            printf 'VBoxManage: error: Cannot open password file %s (VERR_FILE_NOT_FOUND)\n' \
+                "${clave:-''}" >&2
+            exit 1
+        fi
         case "$sub" in
             mktemp) printf 'Directory name: /tmp/vboxdisk.MOCK0001\n' ;;
             copyto)

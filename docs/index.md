@@ -2,19 +2,19 @@
 
 Referencia de la API de `src/lib/`, generada con `make docs` (shdoc).
 
-Las 149 funciones de las 9 bibliotecas, cada una con su descripción,
+Las 168 funciones de las 9 bibliotecas, cada una con su descripción,
 argumentos, variables de entorno, códigos de salida y ejemplos.
 
 ## Bibliotecas
 
-- [`src/lib/apply.sh`](apply.md) (6 funciones)
+- [`src/lib/apply.sh`](apply.md) (9 funciones)
 - [`src/lib/cli.sh`](cli.md) (5 funciones)
-- [`src/lib/common.sh`](common.md) (32 funciones)
-- [`src/lib/config.sh`](config.md) (17 funciones)
-- [`src/lib/guest_ensure.sh`](guest_ensure.md) (17 funciones)
+- [`src/lib/common.sh`](common.md) (36 funciones)
+- [`src/lib/config.sh`](config.md) (22 funciones)
+- [`src/lib/guest_ensure.sh`](guest_ensure.md) (18 funciones)
 - [`src/lib/queries.sh`](queries.md) (7 funciones)
 - [`src/lib/state.sh`](state.md) (16 funciones)
-- [`src/lib/storage.sh`](storage.md) (28 funciones)
+- [`src/lib/storage.sh`](storage.md) (34 funciones)
 - [`src/lib/vbox.sh`](vbox.md) (21 funciones)
 
 ### `apply`
@@ -22,8 +22,11 @@ argumentos, variables de entorno, códigos de salida y ejemplos.
 - [`cmd_apply()`](apply.md#cmd_apply)
 - [`guest_session_open()`](apply.md#guest_session_open)
 - [`guest_session_close()`](apply.md#guest_session_close)
+- [`guest_credentials_ask()`](apply.md#guest_credentials_ask)
 - [`guest_disk_args()`](apply.md#guest_disk_args)
 - [`guest_run()`](apply.md#guest_run)
+- [`guest_emit_raw()`](apply.md#guest_emit_raw)
+- [`record_medium_size()`](apply.md#record_medium_size)
 - [`apply_vm()`](apply.md#apply_vm)
 
 ### `cli`
@@ -39,6 +42,8 @@ argumentos, variables de entorno, códigos de salida y ejemplos.
 - [`now_s()`](common.md#now_s)
 - [`have_cmd()`](common.md#have_cmd)
 - [`is_tty()`](common.md#is_tty)
+- [`color_enabled()`](common.md#color_enabled)
+- [`colorize()`](common.md#colorize)
 - [`bar_segment()`](common.md#bar_segment)
 - [`bar_text()`](common.md#bar_text)
 - [`bar_paint()`](common.md#bar_paint)
@@ -58,7 +63,9 @@ argumentos, variables de entorno, códigos de salida y ejemplos.
 - [`read_answer()`](common.md#read_answer)
 - [`confirm()`](common.md#confirm)
 - [`size_to_mb()`](common.md#size_to_mb)
+- [`prompt_read()`](common.md#prompt_read)
 - [`confirm_choice()`](common.md#confirm_choice)
+- [`sync_credentials()`](common.md#sync_credentials)
 - [`in_list()`](common.md#in_list)
 - [`stage_begin()`](common.md#stage_begin)
 - [`stage_end()`](common.md#stage_end)
@@ -88,6 +95,11 @@ argumentos, variables de entorno, códigos de salida y ejemplos.
 - [`cfg_validate_disks()`](config.md#cfg_validate_disks)
 - [`cfg_validate()`](config.md#cfg_validate)
 - [`cfg_each_vm()`](config.md#cfg_each_vm)
+- [`cfg_sync_begin()`](config.md#cfg_sync_begin)
+- [`cfg_sync_vm()`](config.md#cfg_sync_vm)
+- [`cfg_sync_disk()`](config.md#cfg_sync_disk)
+- [`cfg_sync_commit()`](config.md#cfg_sync_commit)
+- [`cfg_sync_discard()`](config.md#cfg_sync_discard)
 
 ### `guest_ensure`
 
@@ -104,6 +116,7 @@ argumentos, variables de entorno, códigos de salida y ejemplos.
 - [`collect()`](guest_ensure.md#collect)
 - [`wait_for_partition()`](guest_ensure.md#wait_for_partition)
 - [`ensure_label()`](guest_ensure.md#ensure_label)
+- [`ensure_growth()`](guest_ensure.md#ensure_growth)
 - [`ensure_fstab()`](guest_ensure.md#ensure_fstab)
 - [`remove_fstab_entries()`](guest_ensure.md#remove_fstab_entries)
 - [`release_mount()`](guest_ensure.md#release_mount)
@@ -153,13 +166,18 @@ argumentos, variables de entorno, códigos de salida y ejemplos.
 - [`storage_pick_port()`](storage.md#storage_pick_port)
 - [`storage_ensure_portcount()`](storage.md#storage_ensure_portcount)
 - [`storage_require_space()`](storage.md#storage_require_space)
+- [`storage_medium_capacity()`](storage.md#storage_medium_capacity)
+- [`storage_ensure_size()`](storage.md#storage_ensure_size)
 - [`storage_ensure_medium()`](storage.md#storage_ensure_medium)
 - [`storage_ensure_detached()`](storage.md#storage_ensure_detached)
 - [`storage_delete_medium()`](storage.md#storage_delete_medium)
 - [`storage_orphan_disks()`](storage.md#storage_orphan_disks)
+- [`storage_disk_changes()`](storage.md#storage_disk_changes)
+- [`storage_pending_work()`](storage.md#storage_pending_work)
 - [`storage_plan_vm()`](storage.md#storage_plan_vm)
 - [`guest_snapshot()`](storage.md#guest_snapshot)
 - [`guest_restore()`](storage.md#guest_restore)
+- [`guest_summary()`](storage.md#guest_summary)
 - [`storage_parse_guest_output()`](storage.md#storage_parse_guest_output)
 - [`storage_drift()`](storage.md#storage_drift)
 - [`storage_require_exit()`](storage.md#storage_require_exit)
@@ -167,6 +185,7 @@ argumentos, variables de entorno, códigos de salida y ejemplos.
 - [`storage_require_fstab()`](storage.md#storage_require_fstab)
 - [`storage_require_fstype()`](storage.md#storage_require_fstype)
 - [`storage_require_mountpoint()`](storage.md#storage_require_mountpoint)
+- [`storage_require_size()`](storage.md#storage_require_size)
 - [`storage_verify_guest()`](storage.md#storage_verify_guest)
 
 ### `vbox`

@@ -11,13 +11,20 @@
 ### vm_sync_status
 
 Estado de sincronización de la vm contra el archivo declarativo,
-según la huella registrada en state.lock.
+según la huella registrada en state.lock; cuando difiere, se anotan ademas los
+campos de cada disco declarado que cambiaron, que son los que un `apply`
+volveria a converger. Coincidiendo el hash, aun asi se declara
+desincronizada si el host conserva trabajo pendiente (discos por crear o
+adjuntar, medio mas pequeno que lo declarado o disco inactivo), porque es
+trabajo que apply tambien vuelve a aplicar.
 
 #### Example
 
 ```bash
   vm_sync_status web01  # imprime: sincronizada
 @see storage_desired_hash()
+@see storage_disk_changes()
+@see storage_pending_work()
 ```
 
 #### Arguments
@@ -30,8 +37,9 @@ según la huella registrada en state.lock.
 
 #### Output on stdout
 
-* Una de estas tres cadenas, sin salto de línea: "sin estado" (sin
-  registro previo), "sincronizada" o "desincronizada".
+* Una de estas cadenas, sin salto de línea: "sin estado" (sin registro
+  previo), "sincronizada" o "desincronizada", esta ultima con los cambios en
+  parentesis, p. ej. "desincronizada (disco1: tamano, etiqueta)".
 
 ### vm_status_disks
 
@@ -121,7 +129,11 @@ _Function has no arguments._
 #### Output on stdout
 
 * Cabecera MAQUINA, ESTADO, DISCOS y DIRECCION_IP y una fila por vm
-  declarada en el archivo.
+  declarada en el archivo. En terminal la cabecera va en negrita y la celda
+  de ESTADO pinta según el valor: verde sincronizada, amarillo
+  desincronizada y tenue sin estado; la bitácora y lo redirigido van planos.
+  Cada columna se ajusta al ancho de su celda más larga, así que DISCOS y
+  DIRECCION_IP quedan juntas cuando los valores son cortos.
 
 #### Output on stderr
 

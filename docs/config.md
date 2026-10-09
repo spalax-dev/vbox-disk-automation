@@ -17,6 +17,11 @@
 * [cfg_validate_disks](#cfg_validate_disks)
 * [cfg_validate](#cfg_validate)
 * [cfg_each_vm](#cfg_each_vm)
+* [cfg_sync_begin](#cfg_sync_begin)
+* [cfg_sync_vm](#cfg_sync_vm)
+* [cfg_sync_disk](#cfg_sync_disk)
+* [cfg_sync_commit](#cfg_sync_commit)
+* [cfg_sync_discard](#cfg_sync_discard)
 
 ### cfg_is_reserved
 
@@ -332,4 +337,137 @@ _Function has no arguments._
 #### See also
 
 * [cfg_vms()](#cfg_vms)
+
+### cfg_sync_begin
+
+Prepara la sincronizacion: copia el archivo declarativo a un
+hermano temporal y guarda ademas un respaldo del original. La copia es la
+unica que se modifica hasta cfg_sync_commit, de modo que un error de
+validacion deja el archivo como estaba.
+
+_Function has no arguments._
+
+#### Variables set
+
+* **VBOXDISK_SYNC_TMP** (path): Copia temporal abierta; vacia si no se pudo abrir.
+
+#### Exit codes
+
+* **0**: Copia y respaldo listos.
+* **1**: El archivo no existe, no es escribible o no se pudo copiar.
+
+#### Output on stderr
+
+* log_error si el archivo no se puede leer o copiar; log_warn si el respaldo no se pudo guardar.
+
+#### See also
+
+* [cfg_sync_commit()](#cfg_sync_commit)
+* [cfg_sync_discard()](#cfg_sync_discard)
+
+### cfg_sync_vm
+
+Declara en la copia temporal el bloque de una vm que el
+archivo no contempla, con las credenciales pedidas al usuario. Si el bloque
+ya existe no se toca: una maquina declarada conserva su credencial y solo
+sus discos se sincronizan.
+
+#### Arguments
+
+* **$1** (string): Nombre de la vm.
+* **$2** (string): Usuario declarado.
+* **$3** (string): Contrasena en claro; vacia cuando la credencial es un fichero.
+* **$4** (path): Fichero con la contrasena; vacio si la contrasena va en claro.
+
+#### Variables set
+
+* **VBOXDISK_SYNC_TMP** (path): Abre la copia temporal si no estaba abierta.
+
+#### Exit codes
+
+* **0**: El bloque quedo declarado (o ya lo estaba).
+* **1**: No se pudo declarar.
+
+#### Output on stderr
+
+* log_error si el nombre no esta admitido, falta el usuario o yq falla.
+
+#### See also
+
+* [cfg_sync_begin()](#cfg_sync_begin)
+
+### cfg_sync_disk
+
+Declara en la copia temporal un disco a partir de su registro
+en state.lock: label, size, fs_type, mount_point y, si la ultima corrida lo
+dejo escrito, file. El estado no se copia: un disco huerfano nunca esta
+inactivo, y ese valor lo decide el archivo declarativo.
+
+#### Arguments
+
+* **$1** (string): Nombre de la vm.
+* **$2** (string): Clave del disco.
+
+#### Variables set
+
+* **VBOXDISK_SYNC_TMP** (path): Abre la copia temporal si no estaba abierta.
+
+#### Exit codes
+
+* **0**: El disco quedo declarado.
+* **1**: No se pudo declarar.
+
+#### Output on stderr
+
+* log_error si la clave no esta admitida, si el registro no guarda los
+  datos obligatorios o si yq falla.
+
+#### See also
+
+* [state_get_disk()](state.md#state_get_disk)
+
+### cfg_sync_commit
+
+Cierra la sincronizacion: valida la copia temporal y, si pasa,
+la mueve sobre el archivo declarativo. Cualquier error deja el original
+intacto y descarta la copia.
+
+_Function has no arguments._
+
+#### Variables set
+
+* **VBOXDISK_SYNC_TMP** (path): Se vacia al terminar.
+
+#### Exit codes
+
+* **0**: El archivo declarativo quedo reemplazado.
+* **1**: La validacion fallo o no se pudo reemplazar; el archivo no cambia.
+
+#### Output on stderr
+
+* Errores de validacion de la copia y motivo del reemplazo fallido.
+
+#### See also
+
+* [cfg_validate()](#cfg_validate)
+* [cfg_sync_discard()](#cfg_sync_discard)
+
+### cfg_sync_discard
+
+Descarta la copia temporal de una sincronizacion sin cerrar,
+por ejemplo cuando una credencial no se pudo reunir.
+
+_Function has no arguments._
+
+#### Variables set
+
+* **VBOXDISK_SYNC_TMP** (path): Se vacia.
+
+#### Exit codes
+
+* **0**: Siempre.
+
+#### See also
+
+* [cfg_sync_begin()](#cfg_sync_begin)
 

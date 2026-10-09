@@ -28,10 +28,12 @@ vboxdisk ld VM1         # tabla de particiones de VM1 (registrada o en vivo)
 - **Interacción acotada**: solo los caminos peligrosos preguntan, y la respuesta
   se escribe en la terminal, incluso si la entrada estándar está redirigida; sin
   terminal no hay a quien preguntar y la corrida se detiene con código 4. Las
-  contraseñas nunca se piden por la terminal: viajan en ficheros temporales que
-  se destruyen al salir, en el host y en el invitado.
+  credenciales se leen del archivo o del entorno, y solo se preguntan cuando una
+  vm ya no figura en el archivo y hay que entrar en ella: se usan en esa corrida
+  y no se guardan en ninguna parte. Lo que viaja dentro de un fichero temporal,
+  en el host o en el invitado, se destruye al salir.
 - **Códigos de salida distintos** por tipo de fallo, para usar en scripts.
-- **Pruebas con doble de VirtualBox**: 76 pruebas BATS corren sin hipervisor.
+- **Pruebas con doble de VirtualBox**: 160 pruebas BATS corren sin hipervisor.
 
 ## Requisitos
 

@@ -13,6 +13,7 @@
 * [collect](#collect)
 * [wait_for_partition](#wait_for_partition)
 * [ensure_label](#ensure_label)
+* [ensure_growth](#ensure_growth)
 * [ensure_fstab](#ensure_fstab)
 * [remove_fstab_entries](#remove_fstab_entries)
 * [release_mount](#release_mount)
@@ -262,6 +263,30 @@ _Function has no arguments._
 #### Exit codes
 
 * **0**: Siempre; un fallo de la herramienta no detiene la corrida.
+
+### ensure_growth
+
+Amplia la particion hasta el final del medio cuando el anfitrion
+crecio el disco declarado, y con ella el sistema de archivos. Solo se actua si
+la particion no alcanza el tamano declarado, de modo que una corrida sin
+crecimiento no vuelve a tocar nada. Se invoca con el montaje ya resuelto,
+porque xfs solo crece sobre un punto de montaje.
+
+_Function has no arguments._
+
+#### Exit codes
+
+* **0**: Sin crecimiento pendiente o crecimiento concluido.
+* **3**: El medio no crecio, no se localizo la particion, el kernel no tomo
+
+#### Output on stderr
+
+* Nota de ampliacion y la salida de sfdisk, partx, resize2fs o xfs_growfs.
+
+#### See also
+
+* [collect()](#collect)
+* [fail()](#fail)
 
 ### ensure_fstab
 

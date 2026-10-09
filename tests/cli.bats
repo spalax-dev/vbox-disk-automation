@@ -21,9 +21,17 @@ setup() {
     export PATH="$BATS_TEST_DIRNAME/bin:$PATH"
     export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
     export VBOXDISK_STATE_DIR="$BATS_TEST_TMPDIR/state"
+    # run() ejecuta las pruebas en un subproceso, asi que la trampa de salida
+    # del programa no llega a destruir los ficheros de credenciales que
+    # guest_session_open registra: TMPDIR los acota al directorio de la prueba,
+    # que bats borra al terminarla.
+    export TMPDIR="$BATS_TEST_TMPDIR"
     REPO="$BATS_TEST_DIRNAME/.."
     ENTRY="$REPO/src/vboxdisk"
     FIX="$BATS_TEST_DIRNAME/fixtures"
+    # Las credenciales del entorno mandan sobre el archivo: sin limpiarlas una
+    # vm ausente dejaria de pedirlas y la prueba no probaria nada.
+    unset VBOXDISK_VM_USER VBOXDISK_VM_PASS VBOXDISK_VM_PASS_FILE 2>/dev/null || true
 }
 
 @test "sin argumentos muestra el uso y termina con 1" {
@@ -263,6 +271,41 @@ sync_env() {
     [ "$(state_get VM9 desired_hash)" = "$(storage_desired_hash VM9)" ]
 }
 
+# El medio al que apunta el registro crecio por fuera de vboxdisk. La
+# sincronizacion importa el tamano del registro: si se declarara tal cual, el
+# archivo pasaria a exigir un tamano menor que el medio y la verificacion lo
+# rechazaria despues. Lo que se declara es lo que el hipervisor mide.
+@test "apply_vm sincroniza el tamano que mide el medio y no el del registro" {
+    sync_env
+    printf '8000\n' >"$BATS_TEST_TMPDIR/viejo.vdi"
+    export VBOXDISK_MOCK_IP=192.168.1.16
+    export VBOXDISK_MOCK_GA_VERSION=7.2.18
+    local resp="$BATS_TEST_TMPDIR/respuestas" tries="$BATS_TEST_TMPDIR/intentos"
+    printf '%s\n' debian secreto >"$resp"
+    read_answer() {
+        local n=0 line
+        if [[ -f "$tries" ]]; then
+            n="$(cat "$tries")"
+        fi
+        n=$((n + 1))
+        printf '%s\n' "$n" >"$tries"
+        if ((n > 4)); then
+            return 1
+        fi
+        line="$(head -n1 "$resp")"
+        sed -i 1d "$resp"
+        printf '%s' "$line"
+    }
+    run apply_vm VM9
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"el medio mide 8000 MB y el registro guardaba 4096 MB; se corrige el registro"* ]]
+    [[ "$output" == *"convergencia verificada"* ]]
+    [ "$(yq -r '.VM9.disks.viejo.size' "$VBOXDISK_FILE")" = "8000" ]
+    [ "$(state_get_disk VM9 viejo size_mb)" = "8000" ]
+    [ "$(cat "$BATS_TEST_TMPDIR/viejo.vdi")" = "8000" ]
+    ! grep -q "^modifymedium" "$VBOXDISK_MOCK_LOG"
+}
+
 @test "apply_vm sin terminal para las credenciales cancela sin tocar el archivo" {
     sync_env
     run apply_vm VM9 </dev/null
@@ -272,6 +315,127 @@ sync_env() {
     ! yq -e '.VM9' "$VBOXDISK_FILE" >/dev/null 2>&1
     [ ! -f "$VBOXDISK_FILE.bak" ]
     [ -z "$(ls "$BATS_TEST_TMPDIR"/vdisk.yml.sync.* 2>/dev/null)" ]
+}
+
+# vm ausente elegida para eliminar: para retirar el montaje hay que entrar en
+# el invitado, y como el archivo ya no guarda su credencial, se pide antes.
+eliminar_env() {
+    sync_env
+    confirm_choice() {
+        CHOICE="e"
+        return 0
+    }
+    export VBOXDISK_MOCK_IP=192.168.1.18
+    export VBOXDISK_MOCK_GA_VERSION=7.2.18
+}
+
+@test "apply_vm pide las credenciales de una vm ausente antes de tocar el invitado" {
+    eliminar_env
+    local preguntas="$BATS_TEST_TMPDIR/preguntas"
+    # Sin terminal la lectura falla como lo haria en la maquina real; el
+    # doble ademas anota el enunciado de cada pregunta.
+    read_answer() {
+        printf '%s\n' "$1" >>"$preguntas"
+        return 1
+    }
+    run apply_vm VM9
+    [ "$status" -eq 4 ]
+    grep -q "VM9: usuario de la vm" "$preguntas"
+    [[ "$output" == *"no hay terminal donde preguntar"* ]]
+    [[ "$output" == *"etapa 1/5"*"fallida"* ]]
+    [[ "$output" != *"Guest Control no acepto sesiones"* ]]
+    [[ "$output" != *"sincronizado con state.lock"* ]]
+    ! grep -q "guestcontrol" "$VBOXDISK_MOCK_LOG"
+    ! yq -e '.VM9' "$VBOXDISK_FILE" >/dev/null 2>&1
+}
+
+@test "apply_vm pide credenciales de una vm ausente y entra al invitado con ellas" {
+    eliminar_env
+    local respuestas="$BATS_TEST_TMPDIR/respuestas"
+    local preguntas="$BATS_TEST_TMPDIR/preguntas"
+    printf '%s\n' debian secreto >"$respuestas"
+    read_answer() {
+        printf '%s\n' "$1" >>"$preguntas"
+        local line
+        [[ -s "$respuestas" ]] || return 1
+        line="$(head -n1 "$respuestas")"
+        sed -i 1d "$respuestas"
+        printf '%s' "$line"
+    }
+    run apply_vm VM9
+    [ "$status" -eq 0 ]
+    grep -q "VM9: usuario de la vm" "$preguntas"
+    grep -q "VM9: contrasena de debian" "$preguntas"
+    [[ "$output" == *"convergencia verificada"* ]]
+    # La unica fuente de esas credenciales es la pregunta: el archivo no
+    # declara VM9 y el doble se niega a trabajar sin un usuario legible.
+    grep -q -- '--username debian' "$VBOXDISK_MOCK_LOG"
+    # La credencial no se escribe en el archivo: la vm sigue ausente y, sin
+    # discos que resolver, su seccion desaparece del estado.
+    ! yq -e '.VM9' "$VBOXDISK_FILE" >/dev/null 2>&1
+    [ ! -f "$VBOXDISK_FILE.bak" ]
+    run state_vms
+    [[ "$output" != *"VM9"* ]]
+}
+
+@test "guest_credentials_ask no pregunta cuando el archivo declara la credencial" {
+    sync_env
+    read_answer() {
+        printf 'no debia preguntar\n' >&2
+        return 1
+    }
+    local rc=0
+    guest_credentials_ask VM1 || rc=$?
+    [ "$rc" -eq 0 ]
+    [ -z "$VBOXDISK_CRED_USER" ]
+    [ -z "$VBOXDISK_CRED_PASS" ]
+    [ -z "$VBOXDISK_CRED_PASSFILE" ]
+}
+
+@test "guest_credentials_ask pide usuario y contrasena de una vm sin bloque" {
+    sync_env
+    local resp="$BATS_TEST_TMPDIR/respuestas"
+    printf '%s\n' debian secreto >"$resp"
+    read_answer() {
+        local line
+        [[ -s "$resp" ]] || return 1
+        line="$(head -n1 "$resp")"
+        sed -i 1d "$resp"
+        printf '%s' "$line"
+    }
+    local rc=0
+    guest_credentials_ask VM9 || rc=$?
+    [ "$rc" -eq 0 ]
+    [ "$VBOXDISK_CRED_USER" = "debian" ]
+    [ "$VBOXDISK_CRED_PASS" = "secreto" ]
+    [ -z "$VBOXDISK_CRED_PASSFILE" ]
+}
+
+@test "guest_session_open abre sesion con las credenciales pedidas" {
+    sync_env
+    VBOXDISK_CRED_USER="debian"
+    VBOXDISK_CRED_PASS="secreto"
+    VBOXDISK_CRED_PASSFILE=""
+    local rc=0
+    guest_session_open VM9 || rc=$?
+    [ "$rc" -eq 0 ]
+    [ "$VBOXDISK_GUEST_USER" = "debian" ]
+    [ -f "$VBOXDISK_GUEST_PASSFILE" ]
+    grep -q -- '--username debian' "$VBOXDISK_MOCK_LOG"
+    guest_session_close VM9
+    cleanup_tmps
+}
+
+@test "guest_session_open sin credenciales explica el motivo sin reintentar" {
+    sync_env
+    VBOXDISK_CRED_USER=""
+    VBOXDISK_CRED_PASS=""
+    VBOXDISK_CRED_PASSFILE=""
+    run guest_session_open VM9
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"no hay credenciales para abrir la sesion con el invitado"* ]]
+    [[ "$output" != *"Guest Control no acepto sesiones"* ]]
+    [[ "$output" != *"Directory name"* ]]
 }
 
 @test "apply --dry-run con vm ausente en el hipervisor termina con 1" {
@@ -608,6 +772,8 @@ conforme_env() {
     [ "$status" -eq 0 ]
     [[ "$output" == *"declarado difiere del registro: tamano 4096 -> 8192 MB"* ]]
     [[ "$output" == *"medio ampliado de 4096 a 8192 MB"* ]]
+    # el registro se corrige al instante de ampliar, no al final de la corrida
+    [[ "$output" == *"el medio mide 8192 MB y el registro guardaba 4096 MB; se corrige el registro"* ]]
     [[ "$output" == *"convergencia verificada"* ]]
     grep -q "^modifymedium disk $BATS_TEST_TMPDIR/disk1.vdi --resize 8192$" "$VBOXDISK_MOCK_LOG"
     [ "$(cat "$BATS_TEST_TMPDIR/disk1.vdi")" = "8192" ]
@@ -629,6 +795,10 @@ conforme_env() {
     [ "$status" -eq 3 ]
     [[ "$output" == *"es menor que el medio actual"* ]]
     [[ "$output" != *"convergencia verificada"* ]]
+    # aunque la verificacion pare, el registro deja de guardar un tamano
+    # imposible de aplicar: VirtualBox no reduce un medio.
+    [[ "$output" == *"el medio mide 8192 MB y el registro guardaba 4096 MB; se corrige el registro"* ]]
+    [ "$(state_get_disk VM1 disk1 size_mb)" = "8192" ]
     [ "$(cat "$BATS_TEST_TMPDIR/disk1.vdi")" = "8192" ]
     if [[ -f "$VBOXDISK_MOCK_LOG" ]]; then
         ! grep -q '^modifymedium' "$VBOXDISK_MOCK_LOG"

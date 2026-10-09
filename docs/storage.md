@@ -13,13 +13,18 @@
 * [storage_pick_port](#storage_pick_port)
 * [storage_ensure_portcount](#storage_ensure_portcount)
 * [storage_require_space](#storage_require_space)
+* [storage_medium_capacity](#storage_medium_capacity)
+* [storage_ensure_size](#storage_ensure_size)
 * [storage_ensure_medium](#storage_ensure_medium)
 * [storage_ensure_detached](#storage_ensure_detached)
 * [storage_delete_medium](#storage_delete_medium)
 * [storage_orphan_disks](#storage_orphan_disks)
+* [storage_disk_changes](#storage_disk_changes)
+* [storage_pending_work](#storage_pending_work)
 * [storage_plan_vm](#storage_plan_vm)
 * [guest_snapshot](#guest_snapshot)
 * [guest_restore](#guest_restore)
+* [guest_summary](#guest_summary)
 * [storage_parse_guest_output](#storage_parse_guest_output)
 * [storage_drift](#storage_drift)
 * [storage_require_exit](#storage_require_exit)
@@ -27,6 +32,7 @@
 * [storage_require_fstab](#storage_require_fstab)
 * [storage_require_fstype](#storage_require_fstype)
 * [storage_require_mountpoint](#storage_require_mountpoint)
+* [storage_require_size](#storage_require_size)
 * [storage_verify_guest](#storage_verify_guest)
 
 ### storage_desired_hash
@@ -82,10 +88,15 @@ el nombre sale del directorio de la maquina y de la clave del disco.
 ### storage_fingerprint
 
 Huella fisica de toda la configuracion de almacenamiento de la
-maquina: controladores y MAC reportados por showvminfo, mas el fichero y la
-adjuncion de cada disco declarado (sin VMState, para que la huella de una vm
-apagada coincida con la registrada). Un disco sin fichero se aporta como
-"<disco> sin fichero".
+maquina: controladores y MAC reportados por showvminfo, mas la ruta, la
+capacidad y la adjuncion de cada disco declarado (sin VMState, para que la
+huella de una vm apagada coincida con la registrada). El mtime y el tamano
+del fichero quedan fuera de proposito: los cambia cada escritura del
+invitado, de modo que incluirlos haria que la huella de una maquina
+encendida nunca volviera a coincidir con la registrada y el plan anunciara
+siempre una huella modificada fuera de la solucion; el contenido del disco
+se huella aparte con storage_disk_fingerprint y queda registrado en
+state.lock. Un disco sin fichero se aporta como "<disco> sin fichero".
 
 #### Arguments
 
@@ -98,7 +109,10 @@ apagada coincida con la registrada). Un disco sin fichero se aporta como
 ### storage_disk_fingerprint
 
 Huella fisica de un disco: estado del fichero en el host (mtime y
-tamano), su ruta y la linea de adjuncion en showvminfo.
+tamano), su ruta y la linea de adjuncion en showvminfo. Es la huella de
+contenido que se registra en state.lock como evidencia; la comparacion de la
+maquina contra lo registrado no pasa por aqui, porque su mtime y su tamano
+cambian con cada escritura del invitado y usa storage_fingerprint.
 
 #### Arguments
 
@@ -108,6 +122,10 @@ tamano), su ruta y la linea de adjuncion en showvminfo.
 #### Output on stdout
 
 * sha256 en hexadecimal de 64 caracteres, con salto de linea.
+
+#### See also
+
+* [storage_fingerprint()](#storage_fingerprint)
 
 ### storage_disk_attached
 
@@ -259,23 +277,77 @@ createmedium, para no dejar un medio a medias.
 
 * log_warn si no se pudo medir el espacio (se continua sin esa comprobacion); log_error si falta espacio.
 
+### storage_medium_capacity
+
+Capacidad de un medio del hipervisor, en MB, leida de
+showmediuminfo. El fichero no declarativo (una ruta creada a mano en una
+prueba, por ejemplo) no tiene capacidad publicable.
+
+#### Arguments
+
+* **$1** (path): Ruta del fichero .vdi.
+
+#### Exit codes
+
+* **0**: La capacidad se pudo leer.
+* **1**: El medio no existe o no publico una capacidad numerica.
+
+#### Output on stdout
+
+* Capacidad en MB, sin salto de linea.
+
+#### Output on stderr
+
+* La salida cruda de VBoxManage queda descartada.
+
+### storage_ensure_size
+
+Ajusta la capacidad del medio a la declarada cuando el disco
+fisico quedo mas pequeno. Solo se admite ampliar: VirtualBox rechaza reducir
+un medio y un tamano declarado menor que el actual se toma como error. Si la
+maquina esta encendida se detiene sin preguntar, porque el medio no se puede
+ampliar en caliente (el llamador la vuelve a encender en la etapa siguiente).
+
+#### Arguments
+
+* **$1** (string): Nombre de la vm en el hipervisor.
+* **$2** (path): Ruta del fichero .vdi.
+* **$3** (int): Tamano declarado en MB.
+
+#### Exit codes
+
+* **0**: El medio ya tiene el tamano declarado, se amplio o no se pudo leer.
+* **2**: VBOXDISK_E_COMM: no se pudo detener la maquina.
+* **3**: VBOXDISK_E_STORAGE: tamano declarado menor que el actual o fallo al ampliar.
+
+#### Output on stderr
+
+* log_warn si no se pudo leer la capacidad, log_info al ampliar o detener, log_error al rechazar una reduccion y la salida cruda de VBoxManage.
+
+#### See also
+
+* [storage_medium_capacity()](#storage_medium_capacity)
+* [vbox_stop()](vbox.md#vbox_stop)
+
 ### storage_ensure_medium
 
 Crea y adjunta el disco declarativo. Si el fichero ya existe solo
-se adjunta; si la vm esta encendida exige confirmacion, porque la adjuncion
-implica detener la maquina (el llamador la vuelve a encender despues).
+se ajusta a su tamano declarado (si hace falta) y se adjunta; si la vm esta
+encendida exige confirmacion, porque la adjuncion implica detener la maquina
+(el llamador la vuelve a encender despues). Una ampliacion de capacidad no
+exige confirmacion: se detiene la maquina sin preguntar.
 
 #### Arguments
 
 * **$1** (string): Nombre de la vm en el hipervisor.
 * **$2** (path): Ruta del fichero .vdi a crear y adjuntar.
-* **$3** (int): Tamano del disco en MB, usado solo si hay que crearlo.
+* **$3** (int): Tamano declarado del disco en MB.
 
 #### Exit codes
 
-* **0**: El disco ya estaba adjunto o quedo creado y adjunto.
-* **2**: VBOXDISK_E_COMM: no se pudo detener la maquina para adjuntar.
-* **3**: VBOXDISK_E_STORAGE: sin espacio, sin puerto, fallo al crear o al adjuntar.
+* **0**: El disco ya estaba adjunto o quedo creado, ampliado y adjunto.
+* **2**: VBOXDISK_E_COMM: no se pudo detener la maquina para adjuntar o ampliar.
+* **3**: VBOXDISK_E_STORAGE: sin espacio, sin puerto, reduccion declarada, fallo al crear, al ampliar o al adjuntar.
 * **4**: VBOXDISK_E_CANCEL: el usuario rechazo la confirmacion.
 
 #### Output on stderr
@@ -285,6 +357,7 @@ implica detener la maquina (el llamador la vuelve a encender despues).
 #### See also
 
 * [confirm()](common.md#confirm)
+* [storage_ensure_size()](#storage_ensure_size)
 * [storage_pick_port()](#storage_pick_port)
 
 ### storage_ensure_detached
@@ -342,6 +415,60 @@ quedaron inactivos se consideran resueltos.
 
 * Una clave de disco por linea, en orden de registro; nada si no hay huerfanos.
 
+### storage_disk_changes
+
+Cambios que el archivo declarativo impone sobre el registro del
+mismo disco en state.lock: cada campo declarado que difiere de lo registrado.
+Un disco sin registro previo no tiene cambios que reportar (se crea entero en
+la etapa 1) y el fichero se compara por su ruta efectiva, de modo que una
+declaracion sin 'file' no se confunda con un cambio.
+
+#### Arguments
+
+* **$1** (string): Nombre de la vm en el archivo declarativo.
+* **$2** (string): Clave del disco bajo la vm.
+* **$3** (string): Modo: "largo" (por defecto) con "campo: registrado -> declarado"; "corto" solo con los campos.
+
+#### Exit codes
+
+* **0**: Siempre.
+
+#### Output on stdout
+
+* Los cambios separados por "; ", sin salto de linea; cadena vacia si no hay ninguno.
+
+#### See also
+
+* [state_get_disk()](state.md#state_get_disk)
+* [cfg_disk_get()](config.md#cfg_disk_get)
+
+### storage_pending_work
+
+Trabajo pendiente del almacenamiento declarado contra el host:
+discos que faltan por crear, adjuntar o desprender, capacidades que no
+coinciden con lo declarado y campos declarados que difieren de lo registrado
+en state.lock. Solo lo que exige accion: un disco ya adjunto y conforme no
+anade nada, y los discos registrados ausentes del archivo se cuentan aparte
+porque son decision del usuario.
+
+#### Arguments
+
+* **$1** (string): Nombre de la vm en el archivo declarativo.
+* **$2** (string): Modo: "largo" (por defecto) con el motivo explicativo; "corto"
+
+#### Exit codes
+
+* **0**: Siempre.
+
+#### Output on stdout
+
+* Los motivos separados por "; ", sin salto de linea; cadena vacia si no hay trabajo.
+
+#### See also
+
+* [storage_disk_changes()](#storage_disk_changes)
+* [storage_medium_capacity()](#storage_medium_capacity)
+
 ### storage_plan_vm
 
 Plan de la verificacion declarativa en el host, sin tocar la
@@ -353,7 +480,7 @@ maquina (usado por --dry-run). No escribe en state.lock.
 
 #### Output on stdout
 
-* Una unica linea "<vm>: <plan> (estado actual: <potencia>)"; el plan lleva entre parentesis el detalle de los discos cuando lo hay.
+* Una unica linea "<vm>: <plan> (estado actual: <potencia>)"; el plan lleva entre parentesis los motivos de trabajo pendiente y las decisiones de discos registrados, y sin ellos se queda en la sola cabecera. En terminal el nombre de la vm va en negrita y el plan pinta verde si no hay nada que hacer y amarillo si anuncia trabajo pendiente; redirigido o sin terminal sale plano.
 
 ### guest_snapshot
 
@@ -377,6 +504,7 @@ hayan ejecutado otras corridas invitado.
 * **GUEST_S_MOUNTPOINT** (array): Copia de GUEST_MOUNTPOINT para "<vm>/<disco>".
 * **GUEST_S_FSTAB** (array): Copia de GUEST_FSTAB para "<vm>/<disco>".
 * **GUEST_S_LINES** (array): Copia de GUEST_TABLE_LINES para "<vm>/<disco>".
+* **GUEST_S_SIZE** (array): Copia de GUEST_SIZE_MB para "<vm>/<disco>".
 
 #### See also
 
@@ -403,10 +531,36 @@ los campos quedan vacios.
 * **GUEST_MOUNTPOINT** (string): Restaurada desde GUEST_S_MOUNTPOINT.
 * **GUEST_FSTAB** (string): Restaurada desde GUEST_S_FSTAB.
 * **GUEST_TABLE_LINES** (string): Restaurada desde GUEST_S_LINES.
+* **GUEST_SIZE_MB** (string): Restaurada desde GUEST_S_SIZE.
 
 #### See also
 
 * [guest_snapshot()](#guest_snapshot)
+
+### guest_summary
+
+Linea resumen del estado observado en el invitado, para la
+pantalla y la bitacora: sustituye al volcado clave=valor de emit_state, que
+solo se registra en la bitacora. Sin corrida terminada o con la salida
+retenida (ld en vivo) no imprime nada.
+
+#### Arguments
+
+* **$1** (string): Nombre de la vm.
+* **$2** (string): Clave del disco.
+
+#### Exit codes
+
+* **0**: Siempre.
+
+#### Output on stderr
+
+* log_info con "<vm>/<disco>: <dispositivo> <tamano> MB <fs> montado en <punto> (<tabla>, fstab <si|no>)".
+
+#### See also
+
+* [storage_parse_guest_output()](#storage_parse_guest_output)
+* [guest_run()](apply.md#guest_run)
 
 ### storage_parse_guest_output
 
@@ -429,6 +583,7 @@ sustituye a la anterior: los campos ausentes quedan vacios.
 * **GUEST_MOUNTPOINT** (string): Valor de MOUNTPOINT.
 * **GUEST_FSTAB** (string): Valor de FSTAB ("yes" cuando quedo en fstab).
 * **GUEST_TABLE_LINES** (string): Todas las TABLE_LINE concatenadas con saltos de linea.
+* **GUEST_SIZE_MB** (string): Valor de SIZE_MB (tamano del dispositivo en el invitado).
 * **GUEST_NOTE** (string): Ultima nota "guest_ensure: " emitida por el invitado.
 
 ### storage_drift
@@ -541,6 +696,25 @@ Comprueba que el volumen quedo montado en la ruta declarada.
 
 * log_error si el volumen quedo montado en otra ruta.
 
+### storage_require_size
+
+Comprueba que el tamano del disco visible en el invitado es el
+declarado, con una tolerancia de 1 MB para el redondeo de la unidad.
+
+#### Arguments
+
+* **$1** (string): Identificador "<vm>/<disco>" que encabeza el mensaje de error.
+* **$2** (int): Tamano declarado en MB.
+
+#### Exit codes
+
+* **0**: GUEST_SIZE_MB coincide con lo declarado.
+* **1**: GUEST_SIZE_MB difiere de lo declarado o no se pudo leer.
+
+#### Output on stderr
+
+* log_error si el invitado no informo el tamano o si difiere mas de 1 MB.
+
 ### storage_verify_guest
 
 Orquesta la comprobacion final de la convergencia de un disco;
@@ -551,7 +725,7 @@ comprobaciones al codigo 3.
 #### Arguments
 
 * **$1** (string): Nombre de la vm.
-* **$2** (string): Clave del disco; lee fs_type y mount_point del archivo declarativo.
+* **$2** (string): Clave del disco; lee fs_type, mount_point y size del archivo declarativo.
 
 #### Exit codes
 
@@ -569,4 +743,5 @@ comprobaciones al codigo 3.
 * [storage_require_fstab()](#storage_require_fstab)
 * [storage_require_fstype()](#storage_require_fstype)
 * [storage_require_mountpoint()](#storage_require_mountpoint)
+* [storage_require_size()](#storage_require_size)
 

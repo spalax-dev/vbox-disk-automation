@@ -3,6 +3,8 @@
 * [now_s](#now_s)
 * [have_cmd](#have_cmd)
 * [is_tty](#is_tty)
+* [color_enabled](#color_enabled)
+* [colorize](#colorize)
 * [bar_segment](#bar_segment)
 * [bar_text](#bar_text)
 * [bar_paint](#bar_paint)
@@ -22,7 +24,9 @@
 * [read_answer](#read_answer)
 * [confirm](#confirm)
 * [size_to_mb](#size_to_mb)
+* [prompt_read](#prompt_read)
 * [confirm_choice](#confirm_choice)
+* [sync_credentials](#sync_credentials)
 * [in_list](#in_list)
 * [stage_begin](#stage_begin)
 * [stage_end](#stage_end)
@@ -76,6 +80,56 @@ _Function has no arguments._
 
 * **0**: stderr es un terminal.
 * **1**: stderr no es un terminal.
+
+### color_enabled
+
+Indica si un descriptor admite color: NO_COLOR y TERM=dumb lo prohiben,
+VBOXDISK_COLOR=always lo obliga y VBOXDISK_COLOR=never lo prohíbe; en otro caso solo si
+el descriptor es una terminal. Ese orden deja la salida redigida y los caños sin secuencias
+de control sin tener que preguntarlo en cada punto de emisión.
+
+#### Arguments
+
+* **$1** (int): Descriptor que va a recibir el texto (1 stdout, 2 stderr).
+
+#### Exit codes
+
+* **0**: El texto se puede pintar en ese descriptor.
+* **1**: El texto va sin color.
+
+#### See also
+
+* [colorize()](#colorize)
+
+### colorize
+
+Envuelve un texto en la secuencia SGR indicada si el descriptor la admite, y lo
+devuelve tal cual si no. El que llama pinta sin ramificar y sin dejar secuencias de control
+en la bitácora ni en lo que se redirige a un fichero.
+
+#### Example
+
+```bash
+printf '%s\n' "$(colorize 2 31 "falló")"
+```
+
+#### Arguments
+
+* **$1** (int): Descriptor que va a recibir el texto (1 stdout, 2 stderr).
+* **$2** (string): Código SGR a aplicar (31 rojo, 33 amarillo, 36 cian, 2 tenue, 1 negrita); vacío no pinta.
+* **$3** (string): Texto a envolver.
+
+#### Exit codes
+
+* **0**: Siempre.
+
+#### Output on stdout
+
+* El texto con el color alrededor, o el texto original cuando no corresponde color.
+
+#### See also
+
+* [color_enabled()](#color_enabled)
 
 ### bar_segment
 
@@ -339,10 +393,12 @@ Lee de stdin cuando es terminal y, si la entrada está redirigida, de la termina
 stderr también lo sea (el caso de una corrida lanzada desde una terminal con la entrada tomada por
 otro proceso).
 Se invoca siempre entre $( ), de modo que el cambio de stdin no escapa al llamador.
+Con el segundo argumento a 1 la respuesta no se refleja en pantalla, para los datos secretos.
 
 #### Arguments
 
 * **$1** (string): Prompt a mostrar (se le agrega un espacio; la respuesta no forma parte del prompt).
+* **$2** (int): 1 para leer sin eco (por defecto 0).
 
 #### Exit codes
 
@@ -356,7 +412,8 @@ Se invoca siempre entre $( ), de modo que el cambio de stdin no escapa al llamad
 
 #### Output on stderr
 
-* El prompt; la barra se retira antes y se repite después.
+* El prompt; la barra se retira antes y se repite después. Sin eco se cierra además la línea
+  con un salto de línea, que la terminal no imprime al enter.
 
 ### confirm
 
@@ -403,30 +460,79 @@ size_to_mb 4g   # imprime 4096
 
 * El tamaño en MB, sin salto de línea.
 
-### confirm_choice
+### prompt_read
 
-Decide sobre un disco registrado que ya no figura en el archivo declarativo:
-eliminarlo, dejarlo inactivo o saltarlo.
-Acepta e|eliminar|d, i|inactivar y s|saltar (respuesta vacía = saltar), sin distinción de
-mayúsculas; una respuesta no reconocida vuelve a preguntar. -y elige eliminar; sin terminal no hay
-a quien preguntar y la corrida se cancela.
+Lee una respuesta de terminal y traduce sus fallos en la cancelacion de la corrida,
+con el mismo reparto de codigos que confirm() y confirm_choice().
 
 #### Arguments
 
-* **$1** (string): Pregunta; se le agrega " [e]liminar/[i]nactivar/[s]altar:".
-
-#### Variables set
-
-* **CHOICE** (string): Letra elegida: "e" eliminar, "i" inactivar o "s" saltar; queda vacía si se cancela.
+* **$1** (string): Prompt a mostrar.
+* **$2** (int): 1 para leer sin eco (por defecto 0).
+* **$3** (string): Dato que se pide, citado en el mensaje de error (por defecto "la respuesta").
 
 #### Exit codes
 
-* **0**: Decisión tomada (CHOICE con e, i o s).
+* **0**: Lectura completa.
+* **4**: Sin terminal o lectura interrumpida (VBOXDISK_E_CANCEL).
+
+#### Output on stdout
+
+* La respuesta leida, sin salto de linea.
+
+#### Output on stderr
+
+* El prompt; con error, el motivo y la recomendacion de reejecutar desde una terminal.
+
+### confirm_choice
+
+Decide sobre un disco registrado que ya no figura en el archivo declarativo:
+eliminarlo, dejarlo inactivo, sincronizar el archivo con lo registrado o omitirlo.
+Acepta e|eliminar|d, i|inactivar, s|sincronizar|sync y o|omitir|saltar (respuesta vacia = omitir),
+sin distincion de mayusculas; una respuesta no reconocida vuelve a preguntar. -y elige eliminar;
+sin terminal no hay a quien preguntar y la corrida se cancela.
+
+#### Arguments
+
+* **$1** (string): Pregunta; se le agrega " [e]liminar/[i]nactivar/[s]incronizar/[o]mitir:".
+
+#### Variables set
+
+* **CHOICE** (string): Letra elegida: "e" eliminar, "i" inactivar, "s" sincronizar u "o" omitir; queda vacia si se cancela.
+
+#### Exit codes
+
+* **0**: Decision tomada (CHOICE con e, i, s u o).
 * **4**: Cancelada: sin terminal o lectura interrumpida (VBOXDISK_E_CANCEL).
 
 #### Output on stderr
 
-* El prompt y los registros de la decisión o de la respuesta no reconocida.
+* El prompt y los registros de la decision o de la respuesta no reconocida.
+
+### sync_credentials
+
+Credenciales con las que redeclarar en el archivo declarativo una vm que hoy solo
+existe en state.lock: pide el usuario y la contrasena, o el fichero que la guarda, hasta que la
+credencial quede completa. state.lock no conserva secretos, de modo que siempre se pregunta.
+
+#### Arguments
+
+* **$1** (string): Nombre de la vm que se va a redeclarar.
+
+#### Variables set
+
+* **SYNC_USER** (string): Usuario declarado de la vm.
+* **SYNC_PASS** (string): Contrasena en claro; vacia cuando la credencial es un fichero.
+* **SYNC_PASSFILE** (string): Ruta del fichero con la contrasena; vacia si se escribio en claro.
+
+#### Exit codes
+
+* **0**: Credencial completa: con contrasena en claro o con un fichero legible.
+* **4**: Cancelada: sin terminal, lectura interrumpida (VBOXDISK_E_CANCEL).
+
+#### Output on stderr
+
+* El prompt de cada dato y los registros de respuestas incompletas.
 
 ### in_list
 
