@@ -415,3 +415,189 @@ cfg_validate() {
 cfg_each_vm() {
     cfg_vms
 }
+
+# Copia temporal sobre la que se escribe la sincronizacion con state.lock;
+# vacia cuando no hay ninguna en curso. Se declara aqui porque config.sh es
+# la unica biblioteca que la usa.
+VBOXDISK_SYNC_TMP=""
+
+# @description Prepara la sincronizacion: copia el archivo declarativo a un
+# hermano temporal y guarda ademas un respaldo del original. La copia es la
+# unica que se modifica hasta cfg_sync_commit, de modo que un error de
+# validacion deja el archivo como estaba.
+# @noargs
+# @set VBOXDISK_SYNC_TMP path Copia temporal abierta; vacia si no se pudo abrir.
+# @stderr log_error si el archivo no se puede leer o copiar; log_warn si el respaldo no se pudo guardar.
+# @exitcode 0 Copia y respaldo listos.
+# @exitcode 1 El archivo no existe, no es escribible o no se pudo copiar.
+# @see cfg_sync_commit()
+# @see cfg_sync_discard()
+cfg_sync_begin() {
+    if [[ -n "${VBOXDISK_SYNC_TMP:-}" && -f "${VBOXDISK_SYNC_TMP}" ]]; then
+        return 0
+    fi
+    VBOXDISK_SYNC_TMP=""
+    if [[ ! -f "$VBOXDISK_FILE" || ! -r "$VBOXDISK_FILE" ]]; then
+        log_error "archivo declarativo ausente o ilegible: $VBOXDISK_FILE"
+        return 1
+    fi
+    if [[ ! -w "$VBOXDISK_FILE" ]]; then
+        log_error "archivo declarativo no escribible: $VBOXDISK_FILE"
+        return 1
+    fi
+    VBOXDISK_SYNC_TMP="$(mktemp "${VBOXDISK_FILE}.sync.XXXXXX")" || {
+        VBOXDISK_SYNC_TMP=""
+        log_error "no se pudo crear la copia temporal de $VBOXDISK_FILE"
+        return 1
+    }
+    if ! cp -p "$VBOXDISK_FILE" "$VBOXDISK_SYNC_TMP"; then
+        log_error "no se pudo copiar $VBOXDISK_FILE para sincronizarlo"
+        rm -f "$VBOXDISK_SYNC_TMP"
+        VBOXDISK_SYNC_TMP=""
+        return 1
+    fi
+    if cp -p "$VBOXDISK_FILE" "${VBOXDISK_FILE}.bak"; then
+        log_info "respaldo del archivo declarativo: ${VBOXDISK_FILE}.bak"
+    else
+        log_warn "no se pudo guardar el respaldo ${VBOXDISK_FILE}.bak"
+    fi
+    return 0
+}
+
+# @description Declara en la copia temporal el bloque de una vm que el
+# archivo no contempla, con las credenciales pedidas al usuario. Si el bloque
+# ya existe no se toca: una maquina declarada conserva su credencial y solo
+# sus discos se sincronizan.
+# @arg $1 string Nombre de la vm.
+# @arg $2 string Usuario declarado.
+# @arg $3 string Contrasena en claro; vacia cuando la credencial es un fichero.
+# @arg $4 path Fichero con la contrasena; vacio si la contrasena va en claro.
+# @set VBOXDISK_SYNC_TMP path Abre la copia temporal si no estaba abierta.
+# @stderr log_error si el nombre no esta admitido, falta el usuario o yq falla.
+# @exitcode 0 El bloque quedo declarado (o ya lo estaba).
+# @exitcode 1 No se pudo declarar.
+# @see cfg_sync_begin()
+cfg_sync_vm() {
+    local vm="$1" user="$2" pass="$3" passfile="$4"
+    if [[ ! "$vm" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]; then
+        log_error "nombre de vm invalido para sincronizar: $vm"
+        return 1
+    fi
+    if [[ -z "$user" ]]; then
+        log_error "$vm: falta el usuario declarado para sincronizarlo"
+        return 1
+    fi
+    cfg_sync_begin || return 1
+    if yq -e ".\"${vm}\" != null" "$VBOXDISK_SYNC_TMP" >/dev/null 2>&1; then
+        return 0
+    fi
+    if [[ -n "$pass" ]]; then
+        YQ_U="$user" YQ_P="$pass" yq -i \
+            ".\"${vm}\" = {\"vm_user\": strenv(YQ_U), \"vm_pass\": strenv(YQ_P)}" \
+            "$VBOXDISK_SYNC_TMP" || {
+            log_error "$vm: yq no pudo declarar la credencial en claro"
+            return 1
+        }
+    else
+        YQ_U="$user" YQ_P="$passfile" yq -i \
+            ".\"${vm}\" = {\"vm_user\": strenv(YQ_U), \"vm_pass_file\": strenv(YQ_P)}" \
+            "$VBOXDISK_SYNC_TMP" || {
+            log_error "$vm: yq no pudo declarar el fichero de credencial"
+            return 1
+        }
+    fi
+    return 0
+}
+
+# @description Declara en la copia temporal un disco a partir de su registro
+# en state.lock: label, size, fs_type, mount_point y, si la ultima corrida lo
+# dejo escrito, file. El estado no se copia: un disco huerfano nunca esta
+# inactivo, y ese valor lo decide el archivo declarativo.
+# @arg $1 string Nombre de la vm.
+# @arg $2 string Clave del disco.
+# @set VBOXDISK_SYNC_TMP path Abre la copia temporal si no estaba abierta.
+# @stderr log_error si la clave no esta admitida, si el registro no guarda los
+#  datos obligatorios o si yq falla.
+# @exitcode 0 El disco quedo declarado.
+# @exitcode 1 No se pudo declarar.
+# @see state_get_disk()
+cfg_sync_disk() {
+    local vm="$1" disk="$2"
+    local size label fs mount file
+    if [[ ! "$vm" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] ||
+        [[ ! "$disk" =~ ^[A-Za-z0-9._-]+$ ]] || ((${#disk} > 32)); then
+        log_error "$vm/$disk: clave no admitida para sincronizar"
+        return 1
+    fi
+    size="$(state_get_disk "$vm" "$disk" size_mb || true)"
+    label="$(state_get_disk "$vm" "$disk" label || true)"
+    fs="$(state_get_disk "$vm" "$disk" fs_type || true)"
+    mount="$(state_get_disk "$vm" "$disk" mount_point || true)"
+    file="$(state_get_disk "$vm" "$disk" file || true)"
+    if [[ -z "$size" || -z "$label" || -z "$fs" || -z "$mount" ]]; then
+        log_error "$vm/$disk: el registro de state.lock no guarda tamano, etiqueta, tipo de ficheros y montaje"
+        return 1
+    fi
+    if [[ ! "$size" =~ ^[0-9]+$ ]] || ((size <= 0)); then
+        log_error "$vm/$disk: el tamano registrado no es un numero de megabytes: $size"
+        return 1
+    fi
+    cfg_sync_begin || return 1
+    YQ_L="$label" YQ_F="$fs" YQ_M="$mount" yq -i \
+        ".\"${vm}\".disks.\"${disk}\" = {\"label\": strenv(YQ_L), \"size\": ${size}, \"fs_type\": strenv(YQ_F), \"mount_point\": strenv(YQ_M)}" \
+        "$VBOXDISK_SYNC_TMP" || {
+        log_error "$vm/$disk: yq no pudo declarar el disco"
+        return 1
+    }
+    if [[ -n "$file" ]]; then
+        YQ_P="$file" yq -i ".\"${vm}\".disks.\"${disk}\".file = strenv(YQ_P)" \
+            "$VBOXDISK_SYNC_TMP" || {
+            log_error "$vm/$disk: yq no pudo declarar el fichero del disco"
+            return 1
+        }
+    fi
+    return 0
+}
+
+# @description Cierra la sincronizacion: valida la copia temporal y, si pasa,
+# la mueve sobre el archivo declarativo. Cualquier error deja el original
+# intacto y descarta la copia.
+# @noargs
+# @set VBOXDISK_SYNC_TMP path Se vacia al terminar.
+# @stderr Errores de validacion de la copia y motivo del reemplazo fallido.
+# @exitcode 0 El archivo declarativo quedo reemplazado.
+# @exitcode 1 La validacion fallo o no se pudo reemplazar; el archivo no cambia.
+# @see cfg_validate()
+# @see cfg_sync_discard()
+cfg_sync_commit() {
+    local tmp="${VBOXDISK_SYNC_TMP:-}"
+    if [[ -z "$tmp" || ! -f "$tmp" ]]; then
+        log_error "no hay ninguna sincronizacion abierta sobre $VBOXDISK_FILE"
+        return 1
+    fi
+    if ! cfg_validate "$tmp"; then
+        log_error "sincronizacion invalida: $VBOXDISK_FILE se conserva como estaba"
+        cfg_sync_discard
+        return 1
+    fi
+    if ! mv -f "$tmp" "$VBOXDISK_FILE"; then
+        log_error "no se pudo reemplazar $VBOXDISK_FILE"
+        cfg_sync_discard
+        return 1
+    fi
+    VBOXDISK_SYNC_TMP=""
+    return 0
+}
+
+# @description Descarta la copia temporal de una sincronizacion sin cerrar,
+# por ejemplo cuando una credencial no se pudo reunir.
+# @noargs
+# @set VBOXDISK_SYNC_TMP path Se vacia.
+# @exitcode 0 Siempre.
+# @see cfg_sync_begin()
+cfg_sync_discard() {
+    [[ -n "${VBOXDISK_SYNC_TMP:-}" ]] || return 0
+    rm -f "$VBOXDISK_SYNC_TMP"
+    VBOXDISK_SYNC_TMP=""
+    return 0
+}

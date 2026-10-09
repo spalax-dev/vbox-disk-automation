@@ -21,25 +21,41 @@
 # de entrada src/vboxdisk.
 
 # @description Estado de sincronización de la vm contra el archivo declarativo,
-# según la huella registrada en state.lock.
+# según la huella registrada en state.lock; cuando difiere, se anotan ademas los
+# campos de cada disco declarado que cambiaron, que son los que un `apply`
+# volveria a converger.
 # @arg $1 string Nombre de la vm.
-# @stdout Una de estas tres cadenas, sin salto de línea: "sin estado" (sin
-#  registro previo), "sincronizada" o "desincronizada".
+# @stdout Una de estas cadenas, sin salto de línea: "sin estado" (sin registro
+#  previo), "sincronizada" o "desincronizada", esta ultima con los cambios en
+#  parentesis, p. ej. "desincronizada (disco1: tamano, etiqueta)".
 # @exitcode 0 Siempre.
 # @example
 #   vm_sync_status web01  # imprime: sincronizada
 # @see storage_desired_hash()
+# @see storage_disk_changes()
 vm_sync_status() {
-    local vm="$1" desired stored
+    local vm="$1" desired stored disk corto detalle=""
     desired="$(storage_desired_hash "$vm")"
     stored="$(state_get "$vm" desired_hash || true)"
     if [[ -z "$stored" ]]; then
         printf 'sin estado'
-    elif [[ "$stored" == "$desired" ]]; then
-        printf 'sincronizada'
-    else
-        printf 'desincronizada'
+        return 0
     fi
+    if [[ "$stored" == "$desired" ]]; then
+        printf 'sincronizada'
+        return 0
+    fi
+    printf 'desincronizada'
+    while IFS= read -r disk; do
+        [[ -n "$disk" ]] || continue
+        corto="$(storage_disk_changes "$vm" "$disk" corto)"
+        [[ -n "$corto" ]] || continue
+        detalle+="${detalle:+; }$disk: $corto"
+    done < <(cfg_disk_keys "$vm" "$VBOXDISK_FILE")
+    if [[ -n "$detalle" ]]; then
+        printf ' (%s)' "$detalle"
+    fi
+    return 0
 }
 
 # @description Resumen por disco para la columna DISCOS de status: cuántos
@@ -138,13 +154,13 @@ vm_status_ip() {
 # @see vm_sync_status()
 cmd_status() {
     validate_config 1
-    printf '%-12s %-16s %-30s %s\n' "MAQUINA" "ESTADO" "DISCOS" "DIRECCION_IP"
+    printf '%-12s %-32s %-30s %s\n' "MAQUINA" "ESTADO" "DISCOS" "DIRECCION_IP"
     local vm estado discos ip
     while IFS= read -r vm; do
         estado="$(vm_sync_status "$vm")"
         discos="$(vm_status_disks "$vm")"
         ip="$(vm_status_ip "$vm")"
-        printf '%-12s %-16s %-30s %s\n' "$vm" "$estado" "$discos" "$ip"
+        printf '%-12s %-32s %-30s %s\n' "$vm" "$estado" "$discos" "$ip"
     done < <(cfg_vms)
 }
 

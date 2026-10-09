@@ -14,8 +14,9 @@
 # limitations under the License.
 #
 # Doble de VBoxManage para las pruebas: cubre list vms, showvminfo
-# --machinereadable, guestproperty, createmedium, storageattach, closemedium
-# y Guest Control (mktemp, copyto y run), suficiente para ensayar la
+# --machinereadable, guestproperty, createmedium, showmediuminfo,
+# modifymedium, storageattach, closemedium y Guest Control (mktemp, copyto y
+# run), suficiente para ensayar la
 # verificacion declarativa, apply y la consulta en vivo de ld sin una vm
 # real. El estado de la maquina se fija con VBOXDISK_MOCK_VMSTATE; sin esa
 # variable, startvm lo escribe en <estado>.vmstate para que las consultas
@@ -152,13 +153,55 @@ case "${1:-}" in
                 ;;
         esac
         ;;
-    # createmedium crea el fichero vacio, como lo haria el hipervisor.
+    # createmedium crea el fichero con su capacidad en MB como unico
+    # contenido: el doble no almacena binario VDI, pero showmediuminfo y
+    # modifymedium leen y escriben esa capacidad para que una ampliacion se
+    # ensaye de punta a punta.
     createmedium)
         file="$(argumento --filename "" "${@:2}")"
+        size="$(argumento --size "" "${@:2}")"
         if [[ -n "$file" ]]; then
             mkdir -p "$(dirname "$file")"
-            : >"$file"
+            if [[ "$size" =~ ^[0-9]+$ ]]; then
+                printf '%s\n' "$size" >"$file"
+            else
+                : >"$file"
+            fi
         fi
+        ;;
+    # showmediuminfo disk <fichero>: capacidad del medio. Sin un fichero
+    # legible el hipervisor real termina con error, y asi lo reproduce aqui.
+    showmediuminfo)
+        medium="${3:-}"
+        cap=""
+        if [[ -n "$medium" && -f "$medium" ]]; then
+            cap="$(head -n1 "$medium" 2>/dev/null || true)"
+        fi
+        if [[ ! "$cap" =~ ^[0-9]+$ ]]; then
+            printf 'VBoxManage: error: Could not find file for the medium "%s" (VERR_FILE_NOT_FOUND)\n' "$medium" >&2
+            exit 1
+        fi
+        printf 'UUID:           11111111-2222-3333-4444-555555555555\n'
+        printf 'Storage format: VDI\n'
+        printf 'Capacity:       %s MBytes\n' "$cap"
+        printf 'Size on disk:   %s MBytes\n' "$cap"
+        ;;
+    # modifymedium disk <fichero> --resize N: la capacidad nueva queda escrita
+    # en el propio fichero; sin fichero o sin tamano numerico, error.
+    modifymedium)
+        medium="${3:-}"
+        size="$(argumento --resize "" "${@:4}")"
+        if [[ ! "$size" =~ ^[0-9]+$ ]]; then
+            printf 'VBoxManage: error: Argument error: Missing required argument\n' >&2
+            exit 1
+        fi
+        if [[ -z "$medium" || ! -f "$medium" ]]; then
+            printf 'VBoxManage: error: Could not find file for the medium "%s" (VERR_FILE_NOT_FOUND)\n' "$medium" >&2
+            exit 1
+        fi
+        printf '%s\n' "$size" >"$medium"
+        printf 'Progress state: 100%%\n'
+        printf 'Resize complete\n'
         ;;
     # storageattach anade o retira un medio de la lista de adjuntos.
     storageattach)
@@ -258,6 +301,15 @@ case "${1:-}" in
     startvm)
         if [[ -n "${VBOXDISK_MOCK_STATE:-}" ]]; then
             printf 'running\n' >"${VBOXDISK_MOCK_STATE}.vmstate"
+        fi
+        ;;
+    # controlvm acpipowerbutton/poweroff apaga la maquina sin esperar los
+    # 60 s de vbox_stop: el estado vuelve a poweroff en <estado>.vmstate.
+    controlvm)
+        sub="${3:-}"
+        if [[ -n "${VBOXDISK_MOCK_STATE:-}" ]] &&
+            { [[ "$sub" == "acpipowerbutton" ]] || [[ "$sub" == "poweroff" ]]; }; then
+            printf 'poweroff\n' >"${VBOXDISK_MOCK_STATE}.vmstate"
         fi
         ;;
     *)

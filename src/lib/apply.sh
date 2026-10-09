@@ -249,19 +249,27 @@ guest_run() {
 # @description Aplica a una vm las cinco etapas de la Subseccion del algoritmo:
 # verificacion declarativa, disponibilidad, direccion IP, preparacion del
 # almacenamiento en el invitado y verificacion con registro en state.lock.
+# Discos registrados ausentes del archivo se resuelven antes de la primera
+# etapa con [e]liminar, [i]nactivar, [s]incronizar (el archivo vuelve a
+# recoger lo que el estado registra, con las credenciales que se pidan) u
+# [o]mitir.
 # @arg $1 string Nombre de la vm.
 # @stderr Registro de cada etapa, avisos y preguntas de confirmacion.
 # @exitcode 0 Sin cambios o convergencia verificada y registrada.
-# @exitcode 1 Codigo 1 heredado del script invitado (validacion fallida en el invitado).
+# @exitcode 1 VBOXDISK_E_CONFIG: validacion fallida en el invitado o sincronizacion invalida.
 # @exitcode 2 VBOXDISK_E_COMM: encendido, VBoxService, IP o sesion con el invitado fallidos.
 # @exitcode 3 VBOXDISK_E_STORAGE: fallo de almacenamiento o verificacion.
 # @exitcode 4 VBOXDISK_E_CANCEL: decision o confirmacion rechazada por el usuario.
 # @see guest_session_open()
+# @see confirm_choice()
+# @see cfg_sync_commit()
+# @see storage_disk_changes()
 apply_vm() {
     local vm="$1"
     local desired stored fp stored_fp power rc=0 ip ready_t=0
-    local disk file size fstate att uuid drift=0 declared_vm=1 prompt
+    local disk file size fstate att uuid drift=0 declared_vm=1 prompt cambios
     local -a declared=() orphans=() todo_active=() todo_release=() todo_delete=()
+    local -a todo_sync=()
     local -a kv=()
 
     desired="$(storage_desired_hash "$vm")"
@@ -310,8 +318,51 @@ apply_vm() {
             i)
                 todo_release+=("$disk")
                 ;;
+            s)
+                todo_sync+=("$disk")
+                ;;
         esac
     done
+
+    # Discos decididos como sincronizar: el archivo declarativo vuelve a
+    # recoger lo que el estado registra. La sincronizacion se resuelve antes
+    # que cualquier otra decision de la rama ausente del archivo, porque de lo
+    # contrario la salida temprana siguiente la descartaria, y despues de
+    # escribirla la maquina ya esta declarada y su plan vuelve a calcularse
+    # sobre el archivo nuevo.
+    if ((${#todo_sync[@]} > 0)); then
+        rc=0
+        if ((declared_vm == 0)); then
+            sync_credentials "$vm" || rc=$?
+            if ((rc == 0)); then
+                cfg_sync_vm "$vm" "$SYNC_USER" "$SYNC_PASS" "$SYNC_PASSFILE" || rc=$?
+            fi
+        fi
+        if ((rc == 0)); then
+            for disk in "${todo_sync[@]}"; do
+                cfg_sync_disk "$vm" "$disk" || {
+                    rc=$?
+                    break
+                }
+            done
+        fi
+        if ((rc != 0)); then
+            cfg_sync_discard
+            stage_end "$rc"
+            return "$rc"
+        fi
+        cfg_sync_commit || {
+            stage_end "$VBOXDISK_E_CONFIG"
+            return "$VBOXDISK_E_CONFIG"
+        }
+        declared_vm=1
+        declared=()
+        while IFS= read -r disk; do
+            [[ -n "$disk" ]] && declared+=("$disk")
+        done < <(cfg_disk_keys "$vm" "$VBOXDISK_FILE")
+        desired="$(storage_desired_hash "$vm")"
+        log_info "$vm: archivo declarativo sincronizado con state.lock (${todo_sync[*]})"
+    fi
 
     # Una vm ausente del archivo sin discos por resolver no se prepara ni se
     # enciende: si su seccion ya no contiene discos activos, se retira del
@@ -343,6 +394,10 @@ apply_vm() {
             return "$VBOXDISK_E_STORAGE"
         }
         size="$(cfg_disk_size_mb "$vm" "$disk")"
+        cambios="$(storage_disk_changes "$vm" "$disk" largo)"
+        if [[ -n "$cambios" ]]; then
+            log_info "$vm/$disk: declarado difiere del registro: $cambios"
+        fi
         storage_ensure_medium "$vm" "$file" "$size" || rc=$?
         if ((rc != 0)); then
             stage_end "$rc"
@@ -488,6 +543,10 @@ apply_vm() {
         fi
     done
 
+    # La huella se recalcula aqui: las etapas 1 a 4 pueden haber cambiado el
+    # almacenamiento (creacion, adjuncion o ampliacion de un medio), y lo que se
+    # registra es el estado con el que la maquina queda al terminar.
+    fp="$(storage_fingerprint "$vm")"
     kv=("desired_hash=$desired" "fingerprint=$fp" "ip=$ip" "last_run=$(date '+%Y-%m-%d %H:%M:%S')")
     for disk in "${todo_active[@]}"; do
         file="$(storage_disk_file "$vm" "$disk")" || {

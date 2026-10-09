@@ -243,19 +243,33 @@ die() {
 # stderr también lo sea (el caso de una corrida lanzada desde una terminal con la entrada tomada por
 # otro proceso).
 # Se invoca siempre entre $( ), de modo que el cambio de stdin no escapa al llamador.
+# Con el segundo argumento a 1 la respuesta no se refleja en pantalla, para los datos secretos.
 # @arg $1 string Prompt a mostrar (se le agrega un espacio; la respuesta no forma parte del prompt).
+# @arg $2 int 1 para leer sin eco (por defecto 0).
 # @stdout La respuesta leída, sin salto de línea.
-# @stderr El prompt; la barra se retira antes y se repite después.
+# @stderr El prompt; la barra se retira antes y se repite después. Sin eco se cierra además la línea
+#  con un salto de línea, que la terminal no imprime al enter.
 # @exitcode 0 Lectura completa.
 # @exitcode 1 No hay terminal donde preguntar.
 # @exitcode 2 La lectura se interrumpe.
 read_answer() {
-    local prompt="$1" answer
+    local prompt="$1" silent="${2:-0}" answer
+    local -a flags=(-r)
+    if [[ "$silent" == "1" ]]; then
+        flags=(-rs)
+    fi
     if [[ -t 0 ]]; then
         bar_suspend
         printf '%s ' "$prompt" >&2
-        if ! IFS= read -r answer; then
+        # shellcheck disable=SC2162  # flags siempre lleva -r, con o sin eco.
+        if ! IFS= read "${flags[@]}" answer; then
+            if [[ "$silent" == "1" ]]; then
+                printf '\n' >&2
+            fi
             return 2
+        fi
+        if [[ "$silent" == "1" ]]; then
+            printf '\n' >&2
         fi
         bar_resume
         printf '%s' "$answer"
@@ -267,8 +281,15 @@ read_answer() {
     fi
     bar_suspend
     printf '%s ' "$prompt" >&2
-    if ! IFS= read -r answer; then
+    # shellcheck disable=SC2162  # flags siempre lleva -r, con o sin eco.
+    if ! IFS= read "${flags[@]}" answer; then
+        if [[ "$silent" == "1" ]]; then
+            printf '\n' >&2
+        fi
         return 2
+    fi
+    if [[ "$silent" == "1" ]]; then
+        printf '\n' >&2
     fi
     bar_resume
     printf '%s' "$answer"
@@ -335,15 +356,40 @@ size_to_mb() {
     printf '%s' "$num"
 }
 
+# @description Lee una respuesta de terminal y traduce sus fallos en la cancelacion de la corrida,
+# con el mismo reparto de codigos que confirm() y confirm_choice().
+# @arg $1 string Prompt a mostrar.
+# @arg $2 int 1 para leer sin eco (por defecto 0).
+# @arg $3 string Dato que se pide, citado en el mensaje de error (por defecto "la respuesta").
+# @stdout La respuesta leida, sin salto de linea.
+# @stderr El prompt; con error, el motivo y la recomendacion de reejecutar desde una terminal.
+# @exitcode 0 Lectura completa.
+# @exitcode 4 Sin terminal o lectura interrumpida (VBOXDISK_E_CANCEL).
+prompt_read() {
+    local prompt="$1" silent="${2:-0}" what="${3:-la respuesta}" rc=0 answer
+    answer="$(read_answer "$prompt" "$silent")" || rc=$?
+    if ((rc == 1)); then
+        log_error "no hay terminal donde preguntar: $what"
+        log_info "responda en linea reejecutando la orden desde una terminal"
+        return "$VBOXDISK_E_CANCEL"
+    fi
+    if ((rc == 2)); then
+        close_prompt_line
+        log_warn "lectura de la respuesta interrumpida"
+        return "$VBOXDISK_E_CANCEL"
+    fi
+    printf '%s' "$answer"
+}
+
 # @description Decide sobre un disco registrado que ya no figura en el archivo declarativo:
-# eliminarlo, dejarlo inactivo o saltarlo.
-# Acepta e|eliminar|d, i|inactivar y s|saltar (respuesta vacía = saltar), sin distinción de
-# mayúsculas; una respuesta no reconocida vuelve a preguntar. -y elige eliminar; sin terminal no hay
-# a quien preguntar y la corrida se cancela.
-# @arg $1 string Pregunta; se le agrega " [e]liminar/[i]nactivar/[s]altar:".
-# @set CHOICE string Letra elegida: "e" eliminar, "i" inactivar o "s" saltar; queda vacía si se cancela.
-# @stderr El prompt y los registros de la decisión o de la respuesta no reconocida.
-# @exitcode 0 Decisión tomada (CHOICE con e, i o s).
+# eliminarlo, dejarlo inactivo, sincronizar el archivo con lo registrado o omitirlo.
+# Acepta e|eliminar|d, i|inactivar, s|sincronizar|sync y o|omitir|saltar (respuesta vacia = omitir),
+# sin distincion de mayusculas; una respuesta no reconocida vuelve a preguntar. -y elige eliminar;
+# sin terminal no hay a quien preguntar y la corrida se cancela.
+# @arg $1 string Pregunta; se le agrega " [e]liminar/[i]nactivar/[s]incronizar/[o]mitir:".
+# @set CHOICE string Letra elegida: "e" eliminar, "i" inactivar, "s" sincronizar u "o" omitir; queda vacia si se cancela.
+# @stderr El prompt y los registros de la decision o de la respuesta no reconocida.
+# @exitcode 0 Decision tomada (CHOICE con e, i, s u o).
 # @exitcode 4 Cancelada: sin terminal o lectura interrumpida (VBOXDISK_E_CANCEL).
 confirm_choice() {
     local prompt="$1" answer rc=0
@@ -353,7 +399,7 @@ confirm_choice() {
         CHOICE="e"
         return 0
     fi
-    answer="$(read_answer "$prompt [e]liminar/[i]nactivar/[s]altar:")" || rc=$?
+    answer="$(read_answer "$prompt [e]liminar/[i]nactivar/[s]incronizar/[o]mitir:")" || rc=$?
     if ((rc == 1)); then
         log_error "no hay terminal donde preguntar: $prompt"
         log_info "responda en linea reejecutando la orden desde una terminal"
@@ -368,11 +414,12 @@ confirm_choice() {
         case "${answer,,}" in
             e | eliminar | d) CHOICE="e"; return 0 ;;
             i | inactivar) CHOICE="i"; return 0 ;;
-            s | saltar | "") CHOICE="s"; return 0 ;;
+            s | sincronizar | sync) CHOICE="s"; return 0 ;;
+            o | omitir | saltar | "") CHOICE="o"; return 0 ;;
         esac
         log_warn "respuesta no reconocida: $answer"
         rc=0
-        answer="$(read_answer "$prompt [e]liminar/[i]nactivar/[s]altar:")" || rc=$?
+        answer="$(read_answer "$prompt [e]liminar/[i]nactivar/[s]incronizar/[o]mitir:")" || rc=$?
         if ((rc == 1)); then
             log_error "no hay terminal donde preguntar: $prompt"
             log_info "responda en linea reejecutando la orden desde una terminal"
@@ -383,6 +430,51 @@ confirm_choice() {
             log_warn "lectura de la respuesta interrumpida"
             return "$VBOXDISK_E_CANCEL"
         fi
+    done
+}
+
+# @description Credenciales con las que redeclarar en el archivo declarativo una vm que hoy solo
+# existe en state.lock: pide el usuario y la contrasena, o el fichero que la guarda, hasta que la
+# credencial quede completa. state.lock no conserva secretos, de modo que siempre se pregunta.
+# @arg $1 string Nombre de la vm que se va a redeclarar.
+# @set SYNC_USER string Usuario declarado de la vm.
+# @set SYNC_PASS string Contrasena en claro; vacia cuando la credencial es un fichero.
+# @set SYNC_PASSFILE string Ruta del fichero con la contrasena; vacia si se escribio en claro.
+# @stderr El prompt de cada dato y los registros de respuestas incompletas.
+# @exitcode 0 Credencial completa: con contrasena en claro o con un fichero legible.
+# @exitcode 4 Cancelada: sin terminal, lectura interrumpida (VBOXDISK_E_CANCEL).
+sync_credentials() {
+    local vm="$1" answer
+    SYNC_USER=""
+    SYNC_PASS=""
+    SYNC_PASSFILE=""
+    while :; do
+        answer="$(prompt_read "$vm: usuario de la vm:" 0 "$vm")" || return $?
+        if [[ -n "$answer" ]]; then
+            SYNC_USER="$answer"
+            break
+        fi
+        log_warn "el usuario no puede quedar vacio"
+    done
+    while :; do
+        answer="$(prompt_read "$vm: contrasena de $SYNC_USER (enter para indicar un fichero):" 1 "$vm")" || return $?
+        if [[ -n "$answer" ]]; then
+            SYNC_PASS="$answer"
+            SYNC_PASSFILE=""
+            return 0
+        fi
+        answer="$(prompt_read "$vm: fichero con la contrasena:" 0 "$vm")" || return $?
+        if [[ -z "$answer" ]]; then
+            log_warn "se requiere la contrasena o el fichero que la contiene"
+            continue
+        fi
+        if [[ ! -r "$answer" ]]; then
+            log_warn "el fichero no se puede leer: $answer"
+            continue
+        fi
+        SYNC_PASSFILE="$answer"
+        SYNC_PASS=""
+        return 0
     done
 }
 

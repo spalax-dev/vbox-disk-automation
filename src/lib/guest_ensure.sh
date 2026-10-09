@@ -452,6 +452,84 @@ ensure_label() {
     return 0
 }
 
+# @description Amplia la particion hasta el final del medio cuando el anfitrion
+# crecio el disco declarado, y con ella el sistema de archivos. Solo se actua si
+# la particion no alcanza el tamano declarado, de modo que una corrida sin
+# crecimiento no vuelve a tocar nada. Se invoca con el montaje ya resuelto,
+# porque xfs solo crece sobre un punto de montaje.
+# @noargs
+# @stderr Nota de ampliacion y la salida de sfdisk, partx, resize2fs o xfs_growfs.
+# @exitcode 0 Sin crecimiento pendiente o crecimiento concluido.
+# @exitcode 3 El medio no crecio, no se localizo la particion, el kernel no tomo
+# el nuevo tamano o fallo una herramienta (via fail()).
+# @see collect()
+# @see fail()
+ensure_growth() {
+    local target dev_bytes part_start part_bytes part_end part_num
+
+    [[ -n "$G_DEV" && -b "$G_DEV" && -n "$G_PART" && -b "$G_PART" ]] || return 0
+    [[ "$SIZE_MB" =~ ^[0-9]+$ ]] || return 0
+    ((SIZE_MB > 0)) || return 0
+
+    target=$((SIZE_MB * 1024 * 1024))
+    dev_bytes="$(blockdev --getsize64 "$G_DEV" 2>/dev/null || echo 0)"
+    part_start="$(lsblk -nrbo START "$G_PART" 2>/dev/null || echo 0)"
+    part_bytes="$(lsblk -nrbo SIZE "$G_PART" 2>/dev/null || echo 0)"
+    [[ "$dev_bytes" =~ ^[0-9]+$ && "$part_start" =~ ^[0-9]+$ && "$part_bytes" =~ ^[0-9]+$ ]] ||
+        return 0
+    part_end=$((part_start * 512 + part_bytes))
+
+    # 2 MiB de tolerancia: cabecera GPT de respaldo y alineacion de bloques.
+    if ((part_end + 2097152 >= target)); then
+        return 0
+    fi
+    if ((dev_bytes + 2097152 < target)); then
+        fail "el medio $G_DEV solo tiene $((dev_bytes / 1024 / 1024)) MB y lo declarado es $SIZE_MB MB"
+    fi
+    part_num="$(lsblk -nrpo PARTN "$G_PART" 2>/dev/null | head -n1)"
+    [[ "$part_num" =~ ^[0-9]+$ ]] ||
+        fail "no se pudo determinar el numero de particion de $G_PART"
+
+    echo "guest_ensure: ampliando la particion de $G_PART hasta el final de $G_DEV" >&2
+    if [[ "$G_TABLE" == "gpt" ]]; then
+        # La cabecera de respaldo del GPT quedo al final del disco antiguo;
+        # sfdisk la reubica al escribir la tabla.
+        sfdisk --relocate gpt-bak-std "$G_DEV" >&2 || true
+    fi
+    # --no-reread: sin el, sfdisk se niega a escribir cuando la particion
+    # esta montada; --force: habilita el cambio en un disco en uso. La
+    # relectura del ioctl sigue fallando con EBUSY y no es fatal.
+    printf ',+\n' | sfdisk --no-reread --force -N "$part_num" "$G_DEV" >&2 ||
+        fail "sfdisk fallo al ampliar la particion $part_num de $G_DEV"
+    blockdev --rereadpt "$G_DEV" 2>/dev/null || true
+    # El kernel no acepta BLKRRPART con la particion en uso; partx -u
+    # reintenta con BLKPG_RESIZE_PARTITION, que si funciona montado.
+    partx --update --verbose --nr "$part_num" "$G_DEV" >&2 || true
+    udevadm settle 2>/dev/null || true
+    collect
+
+    part_bytes="$(lsblk -nrbo SIZE "$G_PART" 2>/dev/null || echo 0)"
+    [[ "$part_bytes" =~ ^[0-9]+$ ]] || part_bytes=0
+    part_end=$((part_start * 512 + part_bytes))
+    if ((part_end + 2097152 < target)); then
+        fail "el kernel no tomo el nuevo tamano de $G_PART: llega hasta $((part_end / 1024 / 1024)) MB y lo declarado es $SIZE_MB MB"
+    fi
+
+    case "$G_FSTYPE" in
+        ext2 | ext3 | ext4)
+            echo "guest_ensure: ampliando $G_FSTYPE en $G_PART" >&2
+            resize2fs "$G_PART" >&2 || fail "resize2fs fallo en $G_PART"
+            ;;
+        xfs)
+            if [[ "$G_MOUNTED" == "yes" && -n "$MOUNT" ]]; then
+                echo "guest_ensure: ampliando xfs en $MOUNT" >&2
+                xfs_growfs "$MOUNT" >&2 || fail "xfs_growfs fallo en $MOUNT"
+            fi
+            ;;
+    esac
+    return 0
+}
+
 # @description Anade la entrada UUID a /etc/fstab al montar solo si aun no
 # existe; pass 0 en xfs y 2 en ext4, segun la convencion de fsck.
 # @noargs
@@ -568,6 +646,7 @@ converge() {
     # actua si el montaje no esta ni declarado ni activo.
     collect
     if [[ "$G_MOUNTED" == "yes" && "$G_FSTAB" == "yes" ]]; then
+        ensure_growth
         echo "guest_ensure: montaje ya declarado y activo en $MOUNT" >&2
         return 0
     fi
@@ -581,6 +660,7 @@ converge() {
     if ! findmnt --mountpoint "$MOUNT" >/dev/null 2>&1; then
         fail "$MOUNT no quedo montado tras mount -a"
     fi
+    ensure_growth
     echo "guest_ensure: almacenamiento disponible en $MOUNT" >&2
     df -h "$MOUNT" >&2 || true
     return 0

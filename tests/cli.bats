@@ -194,6 +194,86 @@ setup() {
     [[ "$output" != *"convergencia verificada"* ]]
 }
 
+# Prepara una vm registrada que el archivo no declara, con un registro
+# completo de su disco y un archivo declarativo propio de la prueba.
+sync_env() {
+    export VBOXDISK_FILE="$BATS_TEST_TMPDIR/vdisk.yml"
+    export VBOXDISK_MOCK_STATE="$BATS_TEST_TMPDIR/adjuntos"
+    export VBOXDISK_MOCK_LOG="$BATS_TEST_TMPDIR/mock.log"
+    export GUEST_SCRIPT="$REPO/src/lib/guest_ensure.sh"
+    unset VBOXDISK_MOCK_VMSTATE VBOXDISK_ASSUME_YES 2>/dev/null || true
+    cp "$FIX/valid.yml" "$VBOXDISK_FILE"
+    source "$REPO/src/lib/common.sh"
+    source "$REPO/src/lib/config.sh"
+    source "$REPO/src/lib/state.sh"
+    source "$REPO/src/lib/vbox.sh"
+    source "$REPO/src/lib/storage.sh"
+    source "$REPO/src/lib/apply.sh"
+    mkdir -p "$VBOXDISK_STATE_DIR"
+    printf '%s\n' \
+        '[VM9]' \
+        'disks.viejo.state=active' \
+        "disks.viejo.file=$BATS_TEST_TMPDIR/viejo.vdi" \
+        'disks.viejo.size_mb=4096' \
+        'disks.viejo.label=viejo-vm9' \
+        'disks.viejo.fs_type=ext4' \
+        'disks.viejo.mount_point=/mnt/viejo' \
+        >"$VBOXDISK_STATE_DIR/state.lock"
+    confirm_choice() {
+        CHOICE="s"
+        return 0
+    }
+}
+
+@test "apply_vm sincroniza el archivo con state.lock y sigue la convergencia" {
+    sync_env
+    export VBOXDISK_MOCK_IP=192.168.1.16
+    export VBOXDISK_MOCK_GA_VERSION=7.2.18
+    local resp="$BATS_TEST_TMPDIR/respuestas" tries="$BATS_TEST_TMPDIR/intentos"
+    printf '%s\n' debian secreto >"$resp"
+    read_answer() {
+        local n=0 line
+        if [[ -f "$tries" ]]; then
+            n="$(cat "$tries")"
+        fi
+        n=$((n + 1))
+        printf '%s\n' "$n" >"$tries"
+        if ((n > 4)); then
+            return 1
+        fi
+        line="$(head -n1 "$resp")"
+        sed -i 1d "$resp"
+        printf '%s' "$line"
+    }
+    run apply_vm VM9
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"archivo declarativo sincronizado con state.lock (viejo)"* ]]
+    [[ "$output" == *"convergencia verificada"* ]]
+    [ "$(yq -r '.VM9.vm_user' "$VBOXDISK_FILE")" = "debian" ]
+    [ "$(yq -r '.VM9.vm_pass' "$VBOXDISK_FILE")" = "secreto" ]
+    [ "$(yq -r '.VM9.disks.viejo.size' "$VBOXDISK_FILE")" = "4096" ]
+    [ "$(yq -r '.VM9.disks.viejo.file' "$VBOXDISK_FILE")" = "$BATS_TEST_TMPDIR/viejo.vdi" ]
+    [ -f "$VBOXDISK_FILE.bak" ]
+    cmp -s "$FIX/valid.yml" "$VBOXDISK_FILE.bak"
+    grep -q "createmedium" "$VBOXDISK_MOCK_LOG"
+    grep -q "startvm" "$VBOXDISK_MOCK_LOG"
+    grep -q "^disks.viejo.state=active" "$VBOXDISK_STATE_DIR/state.lock"
+    grep -q "^disks.viejo.kv_device=/dev/sdb" "$VBOXDISK_STATE_DIR/state.lock"
+    grep -q "^desired_hash=" "$VBOXDISK_STATE_DIR/state.lock"
+    [ "$(state_get VM9 desired_hash)" = "$(storage_desired_hash VM9)" ]
+}
+
+@test "apply_vm sin terminal para las credenciales cancela sin tocar el archivo" {
+    sync_env
+    run apply_vm VM9 </dev/null
+    [ "$status" -eq 4 ]
+    [[ "$output" == *"no hay terminal donde preguntar"* ]]
+    [[ "$output" != *"sincronizado con state.lock"* ]]
+    ! yq -e '.VM9' "$VBOXDISK_FILE" >/dev/null 2>&1
+    [ ! -f "$VBOXDISK_FILE.bak" ]
+    [ -z "$(ls "$BATS_TEST_TMPDIR"/vdisk.yml.sync.* 2>/dev/null)" ]
+}
+
 @test "apply --dry-run con vm ausente en el hipervisor termina con 1" {
     run "$ENTRY" apply --dry-run -f "$FIX/unknown_vm.yml"
     [ "$status" -eq 1 ]
@@ -344,6 +424,7 @@ setup() {
     source "$REPO/src/lib/storage.sh"
     storage_parse_guest_output "$(printf '%s\n' \
         'DEVICE=/dev/sdb' \
+        'SIZE_MB=4096' \
         'TABLE=gpt' \
         'FSTYPE=ext4' \
         'UUID=abcd-1234' \
@@ -354,6 +435,7 @@ setup() {
         'VBOXDISK_EXIT=0')"
     [ "$GUEST_EXIT" = "0" ]
     [ "$GUEST_DEVICE" = "/dev/sdb" ]
+    [ "$GUEST_SIZE_MB" = "4096" ]
     [ "$GUEST_TABLE" = "gpt" ]
     [ "$GUEST_FSTYPE" = "ext4" ]
     [ "$GUEST_UUID" = "abcd-1234" ]
@@ -367,4 +449,121 @@ setup() {
     storage_parse_guest_output "mensaje de error del servicio Guest Control"
     [ -z "$GUEST_EXIT" ]
     [ -z "$GUEST_DEVICE" ]
+    [ -z "$GUEST_SIZE_MB" ]
+}
+
+@test "guest_snapshot y guest_restore conservan el tamano del invitado" {
+    source "$REPO/src/lib/storage.sh"
+    GUEST_SIZE_MB=8192
+    guest_snapshot VM1 disk1
+    GUEST_SIZE_MB=""
+    guest_restore VM1 disk1
+    [ "$GUEST_SIZE_MB" = "8192" ]
+}
+
+# Deja VM1 declarado con un unico disco en el tmpdir, registrado en state.lock
+# con el tamano de siempre (4096 MB) y el medio ya creado con la capacidad
+# indicada; sin capacidad (segundo argumento vacio) no se crea el fichero.
+tamano_env() {
+    local declarado="$1" capacidad="${2:-}" disk="$BATS_TEST_TMPDIR/disk1.vdi"
+    export VBOXDISK_FILE="$BATS_TEST_TMPDIR/vdisk.yml"
+    printf '%s\n' \
+        'VM1:' \
+        '  vm_user: debian' \
+        '  vm_pass: "secreto"' \
+        '  disks:' \
+        '    disk1:' \
+        "      size: $declarado" \
+        '      fs_type: ext4' \
+        '      mount_point: /mnt/datos' \
+        '      label: datos-vm1' \
+        "      file: $disk" \
+        >"$VBOXDISK_FILE"
+    mkdir -p "$VBOXDISK_STATE_DIR"
+    printf '%s\n' \
+        '[VM1]' \
+        'disks.disk1.state=active' \
+        'disks.disk1.size_mb=4096' \
+        'disks.disk1.label=datos-vm1' \
+        'disks.disk1.fs_type=ext4' \
+        'disks.disk1.mount_point=/mnt/datos' \
+        "disks.disk1.file=$disk" \
+        >"$VBOXDISK_STATE_DIR/state.lock"
+    if [[ -n "$capacidad" ]]; then
+        printf '%s\n' "$capacidad" >"$disk"
+    fi
+}
+
+@test "apply --dry-run senala el medio pequeno y el disco que cambio" {
+    tamano_env 8192 4096
+    run "$ENTRY" apply --dry-run -f "$VBOXDISK_FILE"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"disk1: declarado difiere del registro: tamano 4096 -> 8192 MB"* ]]
+    [[ "$output" == *"disk1: el medio actual es de 4096 MB y lo declarado es de 8192 MB: se ampliara"* ]]
+    [[ "$output" != *"no se puede reducir"* ]]
+    # el plan no toca ni el medio ni el registro
+    [ "$(cat "$BATS_TEST_TMPDIR/disk1.vdi")" = "4096" ]
+    grep -q '^disks.disk1.size_mb=4096$' "$VBOXDISK_STATE_DIR/state.lock"
+    [[ "$output" != *"modifymedium"* ]]
+}
+
+@test "apply --dry-run senala el medio mayor que lo declarado" {
+    tamano_env 4096 8192
+    run "$ENTRY" apply --dry-run -f "$VBOXDISK_FILE"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"disk1: el medio actual es de 8192 MB y lo declarado es de 4096 MB: no se puede reducir"* ]]
+    [ "$(cat "$BATS_TEST_TMPDIR/disk1.vdi")" = "8192" ]
+}
+
+@test "apply amplia el medio declarado y registra el tamano nuevo" {
+    tamano_env 8192 4096
+    export VBOXDISK_MOCK_LOG="$BATS_TEST_TMPDIR/mock.log"
+    export VBOXDISK_MOCK_STATE="$BATS_TEST_TMPDIR/adjuntos"
+    export VBOXDISK_MOCK_IP=192.168.1.16
+    export VBOXDISK_MOCK_GA_VERSION=7.2.18
+    export GUEST_SCRIPT="$REPO/src/lib/guest_ensure.sh"
+    unset VBOXDISK_MOCK_VMSTATE VBOXDISK_ASSUME_YES 2>/dev/null || true
+    source "$REPO/src/lib/common.sh"
+    source "$REPO/src/lib/config.sh"
+    source "$REPO/src/lib/state.sh"
+    source "$REPO/src/lib/vbox.sh"
+    source "$REPO/src/lib/storage.sh"
+    source "$REPO/src/lib/apply.sh"
+    run apply_vm VM1
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"declarado difiere del registro: tamano 4096 -> 8192 MB"* ]]
+    [[ "$output" == *"medio ampliado de 4096 a 8192 MB"* ]]
+    [[ "$output" == *"convergencia verificada"* ]]
+    grep -q "^modifymedium disk $BATS_TEST_TMPDIR/disk1.vdi --resize 8192$" "$VBOXDISK_MOCK_LOG"
+    [ "$(cat "$BATS_TEST_TMPDIR/disk1.vdi")" = "8192" ]
+    [ "$(state_get_disk VM1 disk1 size_mb)" = "8192" ]
+    [ "$(state_get_disk VM1 disk1 fingerprint)" = "$(storage_disk_fingerprint VM1 "$BATS_TEST_TMPDIR/disk1.vdi")" ]
+}
+
+@test "apply termina con 3 cuando lo declarado es menor que el medio" {
+    tamano_env 4096 8192
+    export VBOXDISK_MOCK_LOG="$BATS_TEST_TMPDIR/mock.log"
+    unset VBOXDISK_MOCK_VMSTATE VBOXDISK_ASSUME_YES 2>/dev/null || true
+    source "$REPO/src/lib/common.sh"
+    source "$REPO/src/lib/config.sh"
+    source "$REPO/src/lib/state.sh"
+    source "$REPO/src/lib/vbox.sh"
+    source "$REPO/src/lib/storage.sh"
+    source "$REPO/src/lib/apply.sh"
+    run apply_vm VM1
+    [ "$status" -eq 3 ]
+    [[ "$output" == *"es menor que el medio actual"* ]]
+    [[ "$output" != *"convergencia verificada"* ]]
+    [ "$(cat "$BATS_TEST_TMPDIR/disk1.vdi")" = "8192" ]
+    if [[ -f "$VBOXDISK_MOCK_LOG" ]]; then
+        ! grep -q '^modifymedium' "$VBOXDISK_MOCK_LOG"
+    fi
+}
+
+@test "status detalla el disco que cambio cuando la vm esta desincronizada" {
+    tamano_env 8192 4096
+    printf '%s\n' 'desired_hash=que-no-coincide' >>"$VBOXDISK_STATE_DIR/state.lock"
+    run "$ENTRY" status -f "$VBOXDISK_FILE"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"desincronizada (disk1: tamano)"* ]]
 }

@@ -64,6 +64,95 @@ setup() {
     [[ "$output" == *"confirmacion omitida por -y"* ]]
 }
 
+@test "confirm_choice sincroniza con s, sincronizar o sync" {
+    local ans
+    for ans in s sincronizar sync; do
+        read_answer() { printf '%s' "$ans"; }
+        confirm_choice "disco registrado y ausente del archivo"
+        [ "$CHOICE" = "s" ]
+    done
+}
+
+@test "confirm_choice omite con o, omitir, saltar o sin respuesta" {
+    local ans
+    for ans in o omitir saltar ""; do
+        read_answer() { printf '%s' "$ans"; }
+        confirm_choice "disco registrado y ausente del archivo"
+        [ "$CHOICE" = "o" ]
+    done
+}
+
+@test "confirm_choice rechaza una respuesta desconocida y vuelve a preguntar" {
+    local tries="$BATS_TEST_TMPDIR/intentos" resp="$BATS_TEST_TMPDIR/respuestas"
+    printf '%s\n' zap s >"$resp"
+    read_answer() {
+        local n=0 line
+        if [[ -f "$tries" ]]; then
+            n="$(cat "$tries")"
+        fi
+        n=$((n + 1))
+        printf '%s\n' "$n" >"$tries"
+        line="$(head -n1 "$resp")"
+        sed -i 1d "$resp"
+        printf '%s' "$line"
+    }
+    confirm_choice "disco registrado y ausente del archivo" 2>/dev/null
+    [ "$CHOICE" = "s" ]
+    [ "$(cat "$tries")" = "2" ]
+}
+
+@test "sync_credentials pide usuario y contrasena en claro" {
+    local resp="$BATS_TEST_TMPDIR/respuestas" tries="$BATS_TEST_TMPDIR/intentos"
+    printf '%s\n' debian secreto >"$resp"
+    read_answer() {
+        local n=0 line
+        if [[ -f "$tries" ]]; then
+            n="$(cat "$tries")"
+        fi
+        n=$((n + 1))
+        printf '%s\n' "$n" >"$tries"
+        if ((n > 4)); then
+            return 1
+        fi
+        line="$(head -n1 "$resp")"
+        sed -i 1d "$resp"
+        printf '%s' "$line"
+    }
+    sync_credentials VM9
+    [ "$SYNC_USER" = "debian" ]
+    [ "$SYNC_PASS" = "secreto" ]
+    [ -z "$SYNC_PASSFILE" ]
+}
+
+@test "sync_credentials acepta un fichero con la contrasena" {
+    local resp="$BATS_TEST_TMPDIR/respuestas" tries="$BATS_TEST_TMPDIR/intentos"
+    printf '%s\n' debian "" /etc/hostname >"$resp"
+    read_answer() {
+        local n=0 line
+        if [[ -f "$tries" ]]; then
+            n="$(cat "$tries")"
+        fi
+        n=$((n + 1))
+        printf '%s\n' "$n" >"$tries"
+        if ((n > 5)); then
+            return 1
+        fi
+        line="$(head -n1 "$resp")"
+        sed -i 1d "$resp"
+        printf '%s' "$line"
+    }
+    sync_credentials VM9
+    [ "$SYNC_USER" = "debian" ]
+    [ "$SYNC_PASSFILE" = "/etc/hostname" ]
+    [ -z "$SYNC_PASS" ]
+}
+
+@test "sync_credentials sin terminal cancela la corrida con 4" {
+    run sync_credentials VM9 </dev/null
+    [ "$status" -eq 4 ]
+    [[ "$output" == *"no hay terminal donde preguntar"* ]]
+}
+
 @test "guest_session_open deja la vm en VBOXDISK_CURRENT_VM para la limpieza" {
     source "$REPO/src/lib/apply.sh"
     GUEST_SCRIPT="$REPO/src/lib/guest_ensure.sh"
@@ -191,4 +280,142 @@ setup() {
     VBOXDISK_FILE="$BATS_TEST_DIRNAME/fixtures/same_size.yml"
     b="$(storage_fingerprint VM1)"
     [ "$a" != "$b" ]
+}
+
+@test "storage_medium_capacity lee la capacidad fijada al crear el medio" {
+    local disk="$BATS_TEST_TMPDIR/VM1-datos.vdi"
+    run VBoxManage createmedium disk --filename "$disk" --size 4096 --format VDI
+    [ "$status" -eq 0 ]
+    [ "$(storage_medium_capacity "$disk")" = "4096" ]
+}
+
+@test "storage_medium_capacity sin un fichero legible no devuelve capacidad" {
+    local disk="$BATS_TEST_TMPDIR/sin-capacidad.vdi"
+    : >"$disk"
+    run storage_medium_capacity "$disk"
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+    run storage_medium_capacity "$BATS_TEST_TMPDIR/nunca-existio.vdi"
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+}
+
+@test "storage_ensure_size amplia un medio menor que lo declarado" {
+    local disk="$BATS_TEST_TMPDIR/VM1-datos.vdi"
+    printf '4096\n' >"$disk"
+    run storage_ensure_size VM1 "$disk" 8192
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"medio ampliado de 4096 a 8192 MB"* ]]
+    [ "$(storage_medium_capacity "$disk")" = "8192" ]
+    grep -q "^modifymedium disk $disk --resize 8192$" "$VBOXDISK_MOCK_LOG"
+}
+
+@test "storage_ensure_size con el tamano declarado no vuelve a tocar el medio" {
+    local disk="$BATS_TEST_TMPDIR/VM1-datos.vdi"
+    printf '4096\n' >"$disk"
+    run storage_ensure_size VM1 "$disk" 4096
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    sin_ampliacion
+}
+
+@test "storage_ensure_size sin capacidad publicada no toca el medio" {
+    local disk="$BATS_TEST_TMPDIR/VM1-datos.vdi"
+    : >"$disk"
+    run storage_ensure_size VM1 "$disk" 8192
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"no se pudo leer la capacidad"* ]]
+    sin_ampliacion
+}
+
+@test "storage_ensure_size se niega a reducir un medio" {
+    local disk="$BATS_TEST_TMPDIR/VM1-datos.vdi"
+    printf '8192\n' >"$disk"
+    run storage_ensure_size VM1 "$disk" 4096
+    [ "$status" -eq 3 ]
+    [[ "$output" == *"VirtualBox no admite reducir un medio"* ]]
+    [ "$(storage_medium_capacity "$disk")" = "8192" ]
+    sin_ampliacion
+}
+
+@test "storage_ensure_size detiene la maquina encendida sin preguntar" {
+    unset VBOXDISK_MOCK_VMSTATE 2>/dev/null || true
+    local disk="$BATS_TEST_TMPDIR/VM1-datos.vdi"
+    printf '4096\n' >"$disk"
+    printf 'running\n' >"$VBOXDISK_MOCK_STATE.vmstate"
+    run storage_ensure_size VM1 "$disk" 8192
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"deteniendo la maquina para ampliar"* ]]
+    grep -q '^controlvm VM1 acpipowerbutton$' "$VBOXDISK_MOCK_LOG"
+    grep -q '^modifymedium disk ' "$VBOXDISK_MOCK_LOG"
+    [ "$(cat "$VBOXDISK_MOCK_STATE.vmstate")" = "poweroff" ]
+}
+
+@test "storage_ensure_medium amplia el medio existente antes de adjuntarlo" {
+    local disk="$BATS_TEST_TMPDIR/VM1-datos.vdi"
+    printf '4096\n' >"$disk"
+    run storage_ensure_medium VM1 "$disk" 8192
+    [ "$status" -eq 0 ]
+    [ "$(storage_medium_capacity "$disk")" = "8192" ]
+    [ "$(storage_attachment VM1 "$disk")" = "SATA 1" ]
+}
+
+# La bitacora del doble no contiene ninguna ampliacion de medio.
+sin_ampliacion() {
+    if [[ -f "$VBOXDISK_MOCK_LOG" ]]; then
+        ! grep -q '^modifymedium' "$VBOXDISK_MOCK_LOG"
+    fi
+}
+
+# Deja declarado VM1/disk1 y su registro en state.lock, con valid.yml tal cual.
+cambios_env() {
+    export VBOXDISK_FILE="$BATS_TEST_TMPDIR/vdisk.yml"
+    cp "$BATS_TEST_DIRNAME/fixtures/valid.yml" "$VBOXDISK_FILE"
+    mkdir -p "$VBOXDISK_STATE_DIR"
+    printf '%s\n' \
+        '[VM1]' \
+        'disks.disk1.state=active' \
+        'disks.disk1.size_mb=4096' \
+        'disks.disk1.label=datos-vm1' \
+        'disks.disk1.fs_type=ext4' \
+        'disks.disk1.mount_point=/mnt/datos' \
+        'disks.disk1.file=/no/existe/VM1-disk1.vdi' \
+        >"$VBOXDISK_STATE_DIR/state.lock"
+}
+
+@test "storage_disk_changes sin declaracion que cambiar devuelve vacio" {
+    cambios_env
+    [ -z "$(storage_disk_changes VM1 disk1 largo)" ]
+}
+
+@test "storage_disk_changes reporta los campos que cambiaron" {
+    cambios_env
+    yq -i '.VM1.disks.disk1.size = 8192' "$VBOXDISK_FILE"
+    yq -i '.VM1.disks.disk1.mount_point = "/mnt/otro"' "$VBOXDISK_FILE"
+    [ "$(storage_disk_changes VM1 disk1 largo)" = "tamano 4096 -> 8192 MB; montaje /mnt/datos -> /mnt/otro" ]
+    [ "$(storage_disk_changes VM1 disk1 corto)" = "tamano; montaje" ]
+}
+
+@test "storage_disk_changes sin registro previo del disco no reporta nada" {
+    cambios_env
+    printf '[VM1]\n' >"$VBOXDISK_STATE_DIR/state.lock"
+    yq -i '.VM1.disks.disk1.size = 8192' "$VBOXDISK_FILE"
+    [ -z "$(storage_disk_changes VM1 disk1 largo)" ]
+}
+
+@test "storage_require_size admite un megabyte de diferencia" {
+    GUEST_SIZE_MB=4097
+    run storage_require_size "VM1/disk1" 4096
+    [ "$status" -eq 0 ]
+    GUEST_SIZE_MB=4100
+    run storage_require_size "VM1/disk1" 4096
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"el invitado ve 4100 MB y lo declarado es 4096 MB"* ]]
+}
+
+@test "storage_require_size sin tamano informado por el invitado falla" {
+    GUEST_SIZE_MB=""
+    run storage_require_size "VM1/disk1" 4096
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"no informo el tamano del disco"* ]]
 }

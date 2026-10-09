@@ -186,3 +186,101 @@ setup() {
     [ "$status" -eq 1 ]
     [[ "$output" == *"debe ser un mapa de discos"* ]]
 }
+
+# Copia del archivo declarativo sobre la que se sincroniza, con el estado que
+# alimenta a cfg_sync_disk: el original del repositorio jamas se modifica.
+sync_env() {
+    source "$REPO/src/lib/state.sh"
+    export VBOXDISK_STATE_DIR="$BATS_TEST_TMPDIR/state"
+    export VBOXDISK_FILE="$BATS_TEST_TMPDIR/vdisk.yml"
+    cp "$FIX/valid.yml" "$VBOXDISK_FILE"
+}
+
+@test "cfg_sync_disk redeclara el disco a partir de state.lock" {
+    sync_env
+    state_set_vm VM1 \
+        "disks.viejo.state=active" \
+        "disks.viejo.file=$BATS_TEST_TMPDIR/viejo.vdi" \
+        "disks.viejo.size_mb=6144" \
+        "disks.viejo.label=viejo-vm1" \
+        "disks.viejo.fs_type=xfs" \
+        "disks.viejo.mount_point=/mnt/viejo"
+    cfg_sync_disk VM1 viejo
+    local tmp="$VBOXDISK_SYNC_TMP"
+    [ -n "$tmp" ]
+    [ "$(yq -r '.VM1.disks.viejo.size' "$tmp")" = "6144" ]
+    [ "$(yq -r '.VM1.disks.viejo.size | type' "$tmp")" = "!!int" ]
+    [ "$(yq -r '.VM1.disks.viejo.label' "$tmp")" = "viejo-vm1" ]
+    [ "$(yq -r '.VM1.disks.viejo.fs_type' "$tmp")" = "xfs" ]
+    [ "$(yq -r '.VM1.disks.viejo.mount_point' "$tmp")" = "/mnt/viejo" ]
+    [ "$(yq -r '.VM1.disks.viejo.file' "$tmp")" = "$BATS_TEST_TMPDIR/viejo.vdi" ]
+    [ "$(yq -r '.VM1.disks.viejo.state // "sin-state"' "$tmp")" = "sin-state" ]
+    run cfg_validate "$tmp"
+    [ "$status" -eq 0 ]
+    cfg_sync_discard
+    [ -z "$VBOXDISK_SYNC_TMP" ]
+}
+
+@test "cfg_sync_disk exige el registro completo y no abre copia alguna" {
+    sync_env
+    state_set_vm VM1 "disks.viejo.state=active"
+    run cfg_sync_disk VM1 viejo
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"no guarda tamano"* ]]
+    [ -z "$(ls "$BATS_TEST_TMPDIR"/vdisk.yml.sync.* 2>/dev/null)" ]
+    [ ! -f "$VBOXDISK_FILE.bak" ]
+}
+
+@test "cfg_sync_vm declara la vm ausente y respeta la ya declarada" {
+    sync_env
+    cfg_sync_vm VM9 debian secreto ""
+    local tmp="$VBOXDISK_SYNC_TMP"
+    [ "$(yq -r '.VM9.vm_user' "$tmp")" = "debian" ]
+    [ "$(yq -r '.VM9.vm_pass' "$tmp")" = "secreto" ]
+    cfg_sync_vm VM1 otra clave ""
+    [ "$(yq -r '.VM1.vm_user' "$tmp")" = "debian" ]
+    [ "$(yq -r '.VM1.vm_pass' "$tmp")" = "secreto" ]
+    cfg_sync_discard
+}
+
+@test "cfg_sync_vm con fichero de credencial deja vm_pass_file" {
+    sync_env
+    cfg_sync_vm VM9 debian "" /etc/hostname
+    [ "$(yq -r '.VM9.vm_pass_file' "$VBOXDISK_SYNC_TMP")" = "/etc/hostname" ]
+    cfg_sync_discard
+}
+
+@test "cfg_sync_commit reemplaza el archivo y guarda el respaldo" {
+    sync_env
+    state_set_vm VM9 \
+        "disks.viejo.state=active" \
+        "disks.viejo.file=$BATS_TEST_TMPDIR/viejo.vdi" \
+        "disks.viejo.size_mb=6144" \
+        "disks.viejo.label=viejo-vm9" \
+        "disks.viejo.fs_type=ext4" \
+        "disks.viejo.mount_point=/mnt/viejo"
+    cfg_sync_vm VM9 debian secreto ""
+    cfg_sync_disk VM9 viejo
+    cfg_sync_commit
+    [ -z "$VBOXDISK_SYNC_TMP" ]
+    [ "$(yq -r '.VM9.disks.viejo.size' "$VBOXDISK_FILE")" = "6144" ]
+    [ "$(yq -r '.VM9.vm_user' "$VBOXDISK_FILE")" = "debian" ]
+    [ -f "$VBOXDISK_FILE.bak" ]
+    cmp -s "$FIX/valid.yml" "$VBOXDISK_FILE.bak"
+    [ -z "$(ls "$BATS_TEST_TMPDIR"/vdisk.yml.sync.* 2>/dev/null)" ]
+    run cfg_validate "$VBOXDISK_FILE"
+    [ "$status" -eq 0 ]
+}
+
+@test "cfg_sync_commit descarta la sincronizacion invalida" {
+    sync_env
+    local before
+    before="$(cat "$VBOXDISK_FILE")"
+    cfg_sync_vm VM9 debian "" /no/existe/clave.pass
+    run cfg_sync_commit
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"sincronizacion invalida"* ]]
+    [[ "$output" == *"vm_pass_file"* ]]
+    [ "$(cat "$VBOXDISK_FILE")" = "$before" ]
+    [ -z "$(ls "$BATS_TEST_TMPDIR"/vdisk.yml.sync.* 2>/dev/null)" ]
+}

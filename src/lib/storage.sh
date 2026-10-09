@@ -279,22 +279,101 @@ storage_require_space() {
     return 0
 }
 
+# @description Capacidad de un medio del hipervisor, en MB, leida de
+# showmediuminfo. El fichero no declarativo (una ruta creada a mano en una
+# prueba, por ejemplo) no tiene capacidad publicable.
+# @arg $1 path Ruta del fichero .vdi.
+# @stdout Capacidad en MB, sin salto de linea.
+# @stderr La salida cruda de VBoxManage queda descartada.
+# @exitcode 0 La capacidad se pudo leer.
+# @exitcode 1 El medio no existe o no publico una capacidad numerica.
+storage_medium_capacity() {
+    local disk="$1" out cap
+    out="$(VBoxManage showmediuminfo disk "$disk" 2>/dev/null || true)"
+    cap="$(printf '%s\n' "$out" | awk '$1 == "Capacity:" { print $2; exit }')"
+    if [[ ! "$cap" =~ ^[0-9]+$ ]]; then
+        return 1
+    fi
+    printf '%s' "$cap"
+}
+
+# @description Ajusta la capacidad del medio a la declarada cuando el disco
+# fisico quedo mas pequeno. Solo se admite ampliar: VirtualBox rechaza reducir
+# un medio y un tamano declarado menor que el actual se toma como error. Si la
+# maquina esta encendida se detiene sin preguntar, porque el medio no se puede
+# ampliar en caliente (el llamador la vuelve a encender en la etapa siguiente).
+# @arg $1 string Nombre de la vm en el hipervisor.
+# @arg $2 path Ruta del fichero .vdi.
+# @arg $3 int Tamano declarado en MB.
+# @stderr log_warn si no se pudo leer la capacidad, log_info al ampliar o detener, log_error al rechazar una reduccion y la salida cruda de VBoxManage.
+# @exitcode 0 El medio ya tiene el tamano declarado, se amplio o no se pudo leer.
+# @exitcode 2 VBOXDISK_E_COMM: no se pudo detener la maquina.
+# @exitcode 3 VBOXDISK_E_STORAGE: tamano declarado menor que el actual o fallo al ampliar.
+# @see storage_medium_capacity()
+# @see vbox_stop()
+storage_ensure_size() {
+    local vm="$1" disk="$2" declared="$3"
+    local cap state out rc
+    if [[ ! -f "$disk" ]]; then
+        return 0
+    fi
+    if [[ ! "$declared" =~ ^[0-9]+$ ]] || ((declared <= 0)); then
+        log_warn "$vm/$disk: tamano declarado ilegible: '$declared'; se omite la comprobacion de capacidad"
+        return 0
+    fi
+    if ! cap="$(storage_medium_capacity "$disk")"; then
+        log_warn "$vm/$disk: no se pudo leer la capacidad de $disk; se omite la comprobacion de capacidad"
+        return 0
+    fi
+    if ((declared == cap)); then
+        return 0
+    fi
+    if ((declared < cap)); then
+        log_error "$vm/$disk: lo declarado ($declared MB) es menor que el medio actual ($cap MB); VirtualBox no admite reducir un medio"
+        return "$VBOXDISK_E_STORAGE"
+    fi
+    state="$(vbox_power_state "$vm" || true)"
+    if [[ "$state" == "running" || "$state" == "starting" ]]; then
+        log_info "$vm: deteniendo la maquina para ampliar $disk"
+        if ! vbox_stop "$vm"; then
+            log_error "$vm: no se pudo detener para ampliar $disk"
+            return "$VBOXDISK_E_COMM"
+        fi
+    fi
+    rc=0
+    out="$(VBoxManage modifymedium disk "$disk" --resize "$declared" 2>&1)" || rc=$?
+    log_raw "$out"
+    if ((rc != 0)); then
+        log_error "$vm: fallo al ampliar $disk de $cap a $declared MB"
+        return "$VBOXDISK_E_STORAGE"
+    fi
+    log_info "$vm: medio ampliado de $cap a $declared MB: $disk"
+    return 0
+}
+
 # @description Crea y adjunta el disco declarativo. Si el fichero ya existe solo
-# se adjunta; si la vm esta encendida exige confirmacion, porque la adjuncion
-# implica detener la maquina (el llamador la vuelve a encender despues).
+# se ajusta a su tamano declarado (si hace falta) y se adjunta; si la vm esta
+# encendida exige confirmacion, porque la adjuncion implica detener la maquina
+# (el llamador la vuelve a encender despues). Una ampliacion de capacidad no
+# exige confirmacion: se detiene la maquina sin preguntar.
 # @arg $1 string Nombre de la vm en el hipervisor.
 # @arg $2 path Ruta del fichero .vdi a crear y adjuntar.
-# @arg $3 int Tamano del disco en MB, usado solo si hay que crearlo.
+# @arg $3 int Tamano declarado del disco en MB.
 # @stderr log_info, log_warn y log_error, mas la salida cruda de VBoxManage.
-# @exitcode 0 El disco ya estaba adjunto o quedo creado y adjunto.
-# @exitcode 2 VBOXDISK_E_COMM: no se pudo detener la maquina para adjuntar.
-# @exitcode 3 VBOXDISK_E_STORAGE: sin espacio, sin puerto, fallo al crear o al adjuntar.
+# @exitcode 0 El disco ya estaba adjunto o quedo creado, ampliado y adjunto.
+# @exitcode 2 VBOXDISK_E_COMM: no se pudo detener la maquina para adjuntar o ampliar.
+# @exitcode 3 VBOXDISK_E_STORAGE: sin espacio, sin puerto, reduccion declarada, fallo al crear, al ampliar o al adjuntar.
 # @exitcode 4 VBOXDISK_E_CANCEL: el usuario rechazo la confirmacion.
 # @see confirm()
+# @see storage_ensure_size()
 # @see storage_pick_port()
 storage_ensure_medium() {
     local vm="$1" disk="$2" size_mb="$3"
     local was_running=0 pick ctl port state out rc
+
+    if [[ -f "$disk" ]]; then
+        storage_ensure_size "$vm" "$disk" "$size_mb" || return "$?"
+    fi
 
     if storage_disk_attached "$vm" "$disk"; then
         log_info "$vm: el disco declarado ya esta adjunto ($disk)"
@@ -456,13 +535,66 @@ storage_orphan_disks() {
     done < <(state_disk_keys "$vm")
 }
 
+# @description Cambios que el archivo declarativo impone sobre el registro del
+# mismo disco en state.lock: cada campo declarado que difiere de lo registrado.
+# Un disco sin registro previo no tiene cambios que reportar (se crea entero en
+# la etapa 1) y el fichero se compara por su ruta efectiva, de modo que una
+# declaracion sin 'file' no se confunda con un cambio.
+# @arg $1 string Nombre de la vm en el archivo declarativo.
+# @arg $2 string Clave del disco bajo la vm.
+# @arg $3 string Modo: "largo" (por defecto) con "campo: registrado -> declarado"; "corto" solo con los campos.
+# @stdout Los cambios separados por "; ", sin salto de linea; cadena vacia si no hay ninguno.
+# @exitcode 0 Siempre.
+# @see state_get_disk()
+# @see cfg_disk_get()
+storage_disk_changes() {
+    local vm="$1" disk="$2" modo="${3:-largo}"
+    local i out="" s_state decl_file
+    local -a campos=(size label fs_type mount_point file state)
+    local -a nombres=(tamano etiqueta tipo_ficheros montaje fichero estado)
+    local -a viejos nuevos
+
+    s_state="$(state_get_disk "$vm" "$disk" state || true)"
+    if [[ -z "$s_state" ]]; then
+        return 0
+    fi
+    decl_file="$(storage_disk_file "$vm" "$disk" || true)"
+    viejos=(
+        "$(state_get_disk "$vm" "$disk" size_mb || true)"
+        "$(state_get_disk "$vm" "$disk" label || true)"
+        "$(state_get_disk "$vm" "$disk" fs_type || true)"
+        "$(state_get_disk "$vm" "$disk" mount_point || true)"
+        "$(state_get_disk "$vm" "$disk" file || true)"
+        "$s_state"
+    )
+    nuevos=(
+        "$(cfg_disk_size_mb "$vm" "$disk" || true)"
+        "$(cfg_disk_get "$vm" "$disk" label)"
+        "$(cfg_disk_get "$vm" "$disk" fs_type)"
+        "$(cfg_disk_get "$vm" "$disk" mount_point)"
+        "${decl_file:-${viejos[4]}}"
+        "$(cfg_disk_state "$vm" "$disk")"
+    )
+    for i in "${!campos[@]}"; do
+        [[ "${viejos[$i]}" == "${nuevos[$i]}" ]] && continue
+        if [[ "$modo" == "corto" ]]; then
+            out+="${out:+; }${nombres[$i]}"
+        elif [[ "${campos[$i]}" == "size" ]]; then
+            out+="${out:+; }tamano ${viejos[$i]:-sin declarar} -> ${nuevos[$i]:-sin declarar} MB"
+        else
+            out+="${out:+; }${nombres[$i]} ${viejos[$i]:-sin declarar} -> ${nuevos[$i]:-sin declarar}"
+        fi
+    done
+    printf '%s' "$out"
+}
+
 # @description Plan de la verificacion declarativa en el host, sin tocar la
 # maquina (usado por --dry-run). No escribe en state.lock.
 # @arg $1 string Nombre de la vm, declarada o no en el archivo declarativo.
 # @stdout Una unica linea "<vm>: <plan> (estado actual: <potencia>)"; el plan lleva entre parentesis el detalle de los discos cuando lo hay.
 storage_plan_vm() {
     local vm="$1"
-    local desired stored fp stored_fp power disk file size fstate
+    local desired stored fp stored_fp power disk file size fstate cambios cap
     local plan extra="" orphans=0 declared_vm=1
     local -a details=()
     cfg_vms | grep -Fxq "$vm" || declared_vm=0
@@ -485,6 +617,19 @@ storage_plan_vm() {
             details+=("$disk: se adjuntara el disco existente")
         else
             details+=("$disk: se creara y adjuntara el disco de ${size} MB")
+        fi
+        cambios="$(storage_disk_changes "$vm" "$disk" largo)"
+        if [[ -n "$cambios" ]]; then
+            details+=("$disk: declarado difiere del registro: $cambios")
+        fi
+        if [[ "$fstate" != "inactive" && -n "$file" && -f "$file" ]] &&
+            cap="$(storage_medium_capacity "$file")" &&
+            [[ "$size" =~ ^[0-9]+$ ]] && ((size > 0)); then
+            if ((size > cap)); then
+                details+=("$disk: el medio actual es de $cap MB y lo declarado es de $size MB: se ampliara")
+            elif ((size < cap)); then
+                details+=("$disk: el medio actual es de $cap MB y lo declarado es de $size MB: no se puede reducir")
+            fi
         fi
     done < <(cfg_disk_keys "$vm" "$VBOXDISK_FILE")
 
@@ -541,12 +686,13 @@ GUEST_MOUNTED=""
 GUEST_MOUNTPOINT=""
 GUEST_FSTAB=""
 GUEST_TABLE_LINES=""
+GUEST_SIZE_MB=""
 
 # Copias por disco de los campos GUEST_*, para verificar cada uno en la etapa
 # final aunque despues se hayan ejecutado otras corridas invitado.
 declare -gA GUEST_S_EXIT=() GUEST_S_DEVICE=() GUEST_S_TABLE=() GUEST_S_FSTYPE=()
 declare -gA GUEST_S_UUID=() GUEST_S_MOUNTED=() GUEST_S_MOUNTPOINT=() GUEST_S_FSTAB=()
-declare -gA GUEST_S_LINES=()
+declare -gA GUEST_S_LINES=() GUEST_S_SIZE=()
 
 # @description Conserva los campos GUEST_* de la ultima corrida del disco en las
 # copias por disco, para verificar cada uno en la etapa final aunque despues se
@@ -562,6 +708,7 @@ declare -gA GUEST_S_LINES=()
 # @set GUEST_S_MOUNTPOINT array Copia de GUEST_MOUNTPOINT para "<vm>/<disco>".
 # @set GUEST_S_FSTAB array Copia de GUEST_FSTAB para "<vm>/<disco>".
 # @set GUEST_S_LINES array Copia de GUEST_TABLE_LINES para "<vm>/<disco>".
+# @set GUEST_S_SIZE array Copia de GUEST_SIZE_MB para "<vm>/<disco>".
 # @see guest_restore()
 guest_snapshot() {
     local key="$1/$2"
@@ -574,6 +721,7 @@ guest_snapshot() {
     GUEST_S_MOUNTPOINT[$key]="$GUEST_MOUNTPOINT"
     GUEST_S_FSTAB[$key]="$GUEST_FSTAB"
     GUEST_S_LINES[$key]="$GUEST_TABLE_LINES"
+    GUEST_S_SIZE[$key]="$GUEST_SIZE_MB"
 }
 
 # @description Recarga en GUEST_* la copia conservada del disco; sin copia previa
@@ -589,6 +737,7 @@ guest_snapshot() {
 # @set GUEST_MOUNTPOINT string Restaurada desde GUEST_S_MOUNTPOINT.
 # @set GUEST_FSTAB string Restaurada desde GUEST_S_FSTAB.
 # @set GUEST_TABLE_LINES string Restaurada desde GUEST_S_LINES.
+# @set GUEST_SIZE_MB string Restaurada desde GUEST_S_SIZE.
 # @see guest_snapshot()
 guest_restore() {
     local key="$1/$2"
@@ -601,6 +750,7 @@ guest_restore() {
     GUEST_MOUNTPOINT="${GUEST_S_MOUNTPOINT[$key]:-}"
     GUEST_FSTAB="${GUEST_S_FSTAB[$key]:-}"
     GUEST_TABLE_LINES="${GUEST_S_LINES[$key]:-}"
+    GUEST_SIZE_MB="${GUEST_S_SIZE[$key]:-}"
 }
 
 # @description Extrae los pares clave=valor y la tabla de la salida del script
@@ -616,6 +766,7 @@ guest_restore() {
 # @set GUEST_MOUNTPOINT string Valor de MOUNTPOINT.
 # @set GUEST_FSTAB string Valor de FSTAB ("yes" cuando quedo en fstab).
 # @set GUEST_TABLE_LINES string Todas las TABLE_LINE concatenadas con saltos de linea.
+# @set GUEST_SIZE_MB string Valor de SIZE_MB (tamano del dispositivo en el invitado).
 # @set GUEST_NOTE string Ultima nota "guest_ensure: " emitida por el invitado.
 storage_parse_guest_output() {
     local out="$1" line
@@ -628,11 +779,13 @@ storage_parse_guest_output() {
     GUEST_MOUNTPOINT=""
     GUEST_FSTAB=""
     GUEST_TABLE_LINES=""
+    GUEST_SIZE_MB=""
     GUEST_NOTE=""
     while IFS= read -r line || [[ -n "$line" ]]; do
         case "$line" in
             VBOXDISK_EXIT=*) GUEST_EXIT="${line#VBOXDISK_EXIT=}" ;;
             DEVICE=*) GUEST_DEVICE="${line#DEVICE=}" ;;
+            SIZE_MB=*) GUEST_SIZE_MB="${line#SIZE_MB=}" ;;
             TABLE=*) GUEST_TABLE="${line#TABLE=}" ;;
             FSTYPE=*) GUEST_FSTYPE="${line#FSTYPE=}" ;;
             UUID=*) GUEST_UUID="${line#UUID=}" ;;
@@ -750,12 +903,39 @@ storage_require_mountpoint() {
     return 0
 }
 
+# @description Comprueba que el tamano del disco visible en el invitado es el
+# declarado, con una tolerancia de 1 MB para el redondeo de la unidad.
+# @arg $1 string Identificador "<vm>/<disco>" que encabeza el mensaje de error.
+# @arg $2 int Tamano declarado en MB.
+# @stderr log_error si el invitado no informo el tamano o si difiere mas de 1 MB.
+# @exitcode 0 GUEST_SIZE_MB coincide con lo declarado.
+# @exitcode 1 GUEST_SIZE_MB difiere de lo declarado o no se pudo leer.
+storage_require_size() {
+    local who="$1" want="$2" diff
+    if [[ ! "$GUEST_SIZE_MB" =~ ^[0-9]+$ ]]; then
+        log_error "$who: el invitado no informo el tamano del disco"
+        return 1
+    fi
+    if [[ ! "$want" =~ ^[0-9]+$ ]] || ((want <= 0)); then
+        return 0
+    fi
+    diff=$((GUEST_SIZE_MB - want))
+    if ((diff < 0)); then
+        diff=$((-diff))
+    fi
+    if ((diff > 1)); then
+        log_error "$who: el invitado ve $GUEST_SIZE_MB MB y lo declarado es $want MB"
+        return 1
+    fi
+    return 0
+}
+
 # @description Orquesta la comprobacion final de la convergencia de un disco;
 # en cuanto alguna propiedad esperada no se cumple, devuelve el codigo de
 # almacenamiento y detiene la corrida de la vm. Traduce cualquier fallo de las
 # comprobaciones al codigo 3.
 # @arg $1 string Nombre de la vm.
-# @arg $2 string Clave del disco; lee fs_type y mount_point del archivo declarativo.
+# @arg $2 string Clave del disco; lee fs_type, mount_point y size del archivo declarativo.
 # @stderr Mensajes de log_error de la comprobacion que falle.
 # @exitcode 0 Todas las propiedades del invitado coinciden con lo declarado.
 # @exitcode 3 VBOXDISK_E_STORAGE: alguna propiedad no coincide.
@@ -764,11 +944,14 @@ storage_require_mountpoint() {
 # @see storage_require_fstab()
 # @see storage_require_fstype()
 # @see storage_require_mountpoint()
+# @see storage_require_size()
 storage_verify_guest() {
-    local vm="$1" disk="$2" fs mount who="$1/$2"
+    local vm="$1" disk="$2" fs mount size who="$1/$2"
     fs="$(cfg_disk_get "$vm" "$disk" fs_type)"
     mount="$(cfg_disk_get "$vm" "$disk" mount_point)"
+    size="$(cfg_disk_size_mb "$vm" "$disk" || true)"
     storage_require_exit "$who" || return "$VBOXDISK_E_STORAGE"
+    storage_require_size "$who" "$size" || return "$VBOXDISK_E_STORAGE"
     storage_require_mounted "$who" "$mount" || return "$VBOXDISK_E_STORAGE"
     storage_require_fstab "$who" "$mount" || return "$VBOXDISK_E_STORAGE"
     storage_require_fstype "$who" "$fs" || return "$VBOXDISK_E_STORAGE"
