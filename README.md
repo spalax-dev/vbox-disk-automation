@@ -33,7 +33,7 @@ vboxdisk ld VM1         # tabla de particiones de VM1 (registrada o en vivo)
   y no se guardan en ninguna parte. Lo que viaja dentro de un fichero temporal,
   en el host o en el invitado, se destruye al salir.
 - **Códigos de salida distintos** por tipo de fallo, para usar en scripts.
-- **Pruebas con doble de VirtualBox**: 160 pruebas BATS corren sin hipervisor.
+- **Pruebas con doble de VirtualBox**: 166 pruebas BATS corren sin hipervisor.
 
 ## Requisitos
 
@@ -111,8 +111,9 @@ VM1:
       label: respaldo-vm1
 ```
 
-- **Nivel vm**: `vm_user` y `disks` son obligatorios; de `vm_pass` y
-  `vm_pass_file` se exige al menos una.
+- **Nivel vm**: `vm_user` es obligatorio; de `vm_pass` y `vm_pass_file` se
+  exige al menos una. `disks` puede venir vacía u omitida mientras la vm no
+  declare discos, y en ese caso `status` la muestra como `<sin declarar>`.
 - **Nivel disco**: `label`, `size`, `fs_type` y `mount_point` son obligatorios;
   `file` y `state` son opcionales. Dentro de una vm, etiquetas y puntos de
   montaje deben ser únicos.

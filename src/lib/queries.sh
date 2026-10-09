@@ -27,10 +27,14 @@
 # desincronizada si el host conserva trabajo pendiente (discos por crear o
 # adjuntar, medio mas pequeno que lo declarado o disco inactivo), porque es
 # trabajo que apply tambien vuelve a aplicar.
+# Sin ningun disco declarado el resultado es "<sin declarar>": no hay con que
+# comparar el registro, y lo que este guarde para la vm queda pendiente de la
+# decision que apply toma sobre los discos huerfanos.
 # @arg $1 string Nombre de la vm.
-# @stdout Una de estas cadenas, sin salto de línea: "sin estado" (sin registro
-#  previo), "sincronizada" o "desincronizada", esta ultima con los cambios en
-#  parentesis, p. ej. "desincronizada (disco1: tamano, etiqueta)".
+# @stdout Una de estas cadenas, sin salto de línea: "<sin declarar>" (la vm no
+#  declara discos), "sin estado" (sin registro previo), "sincronizada" o
+#  "desincronizada", esta ultima con los cambios en parentesis, p. ej.
+#  "desincronizada (disco1: tamano, etiqueta)".
 # @exitcode 0 Siempre.
 # @example
 #   vm_sync_status web01  # imprime: sincronizada
@@ -39,6 +43,10 @@
 # @see storage_pending_work()
 vm_sync_status() {
     local vm="$1" desired stored disk corto detalle=""
+    if [[ -z "$(cfg_disk_keys "$vm" "$VBOXDISK_FILE")" ]]; then
+        printf '<sin declarar>'
+        return 0
+    fi
     desired="$(storage_desired_hash "$vm")"
     stored="$(state_get "$vm" desired_hash || true)"
     if [[ -z "$stored" ]]; then
@@ -157,7 +165,8 @@ vm_status_ip() {
 # @stdout Cabecera MAQUINA, ESTADO, DISCOS y DIRECCION_IP y una fila por vm
 #  declarada en el archivo. En terminal la cabecera va en negrita y la celda
 #  de ESTADO pinta según el valor: verde sincronizada, amarillo
-#  desincronizada y tenue sin estado; la bitácora y lo redirigido van planos.
+#  desincronizada y tenue sin estado o sin declarar; la bitácora y lo
+#  redirigido van planos.
 #  Cada columna se ajusta al ancho de su celda más larga, así que DISCOS y
 #  DIRECCION_IP quedan juntas cuando los valores son cortos.
 # @stderr log_error si falta yq, el archivo no es válido, una vm declarada no

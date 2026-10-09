@@ -16,13 +16,15 @@
 # config.sh: lectura, validacion y precedencia de vdisk.yml con yq.
 # Precedencia: variables de entorno VBOXDISK_* > bloque en vdisk.yml > defecto.
 # El archivo declara una maquina por bloque y, dentro de cada una, la lista
-# de discos de datos bajo la clave 'disks'; el esquema plano anterior
-# (disk_file, disk_size_mb, disk_device, mount_point, fs_type, fs_label) se
-# rechaza con una indicacion explicita de migracion.
+# de discos de datos bajo la clave 'disks'; esa lista puede venir vacia o
+# omitida mientras la maquina no declare ningun disco, y en ese caso lo que
+# el estado registre para ella queda pendiente de decision; el esquema plano
+# anterior (disk_file, disk_size_mb, disk_device, mount_point, fs_type,
+# fs_label) se rechaza con una indicacion explicita de migracion.
 
 # Claves admitidas y obligatorias de cada bloque de vdisk.yml.
 VBOXDISK_KEYS=(vm_user vm_pass vm_pass_file disks)
-VBOXDISK_REQUIRED=(vm_user disks)
+VBOXDISK_REQUIRED=(vm_user)
 # Claves admitidas y obligatorias de cada disco del bloque 'disks'.
 VBOXDISK_DISK_KEYS=(label size fs_type mount_point file state)
 VBOXDISK_DISK_REQUIRED=(label size fs_type mount_point)
@@ -224,13 +226,17 @@ cfg_validate_keys() {
 }
 
 # @description Valida que las claves obligatorias estén presentes y que 'disks'
-# sea un mapa con al menos un disco declarado.
+# sea un mapa de discos.
+# 'disks' puede faltar, venir nulo o ser un mapa vacio: la maquina todavia no
+# declara ningun disco, que es el caso de un fichero recien creado o de una
+# maquina a la que se le retiran todos. Solo se rechaza si trae otra cosa que
+# un mapa (una lista o un valor simple).
 # Acumula todos los errores del bloque, sin detenerse en el primero.
 # @arg $1 string Nombre de la vm.
 # @arg $2 path Fichero YAML del que leer.
 # @stderr log_error por cada obligatoria ausente y por 'disks' mal formado.
 # @exitcode 0 El bloque cumple lo obligatorio.
-# @exitcode 1 Falta alguna clave obligatoria o 'disks' no es un mapa con discos.
+# @exitcode 1 Falta alguna clave obligatoria o 'disks' no es un mapa.
 cfg_validate_required() {
     local vm="$1" file="$2" key val type rc=0
     for key in "${VBOXDISK_REQUIRED[@]}"; do
@@ -242,14 +248,9 @@ cfg_validate_required() {
     done
     type="$(yq -r ".\"${vm}\".disks | type" "$file" 2>/dev/null || printf 'null')"
     case "$type" in
-        "!!map")
-            if [[ -z "$(cfg_disk_keys "$vm" "$file")" ]]; then
-                log_error "$vm: 'disks' no declara ningun disco"
-                rc=1
-            fi
-            ;;
-        "!!null")
-            # Ya reportada arriba como clave obligatoria ausente.
+        "!!map" | "!!null")
+            # Sin discos declarados no hay nada que comprobar aqui; la
+            # decision sobre lo que el estado registre la toma apply.
             ;;
         *)
             log_error "$vm: 'disks' debe ser un mapa de discos (no una lista ni un valor simple)"

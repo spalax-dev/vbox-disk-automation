@@ -187,6 +187,35 @@ setup() {
     [[ "$output" == *"debe ser un mapa de discos"* ]]
 }
 
+# Un bloque sin discos es valido: es un fichero recien creado, donde todavia
+# no se declaro ninguno, o una maquina a la que se le retiran todos. La
+# decision sobre lo que el estado registre la toma apply, no la validacion.
+@test "una seccion sin discos declarados supera la validacion" {
+    local file="$BATS_TEST_TMPDIR/vacio.yml"
+    printf '%s\n' \
+        'VM1:' \
+        '  vm_user: debian' \
+        '  vm_pass: "secreto"' \
+        '  disks: null' \
+        'VM2:' \
+        '  vm_user: debian' \
+        '  vm_pass: "secreto"' \
+        '  disks:' \
+        'VM3:' \
+        '  vm_user: debian' \
+        '  vm_pass: "secreto"' \
+        '  disks: {}' \
+        'VM4:' \
+        '  vm_user: debian' \
+        '  vm_pass: "secreto"' \
+        >"$file"
+    run cfg_validate "$file"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    [ "$(cfg_disk_keys VM1 "$file")" = "" ]
+    [ "$(cfg_disk_keys VM4 "$file")" = "" ]
+}
+
 # Copia del archivo declarativo sobre la que se sincroniza, con el estado que
 # alimenta a cfg_sync_disk: el original del repositorio jamas se modifica.
 sync_env() {

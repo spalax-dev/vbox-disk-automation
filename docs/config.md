@@ -241,7 +241,11 @@ Acumula todos los errores del bloque, sin detenerse en el primero.
 ### cfg_validate_required
 
 Valida que las claves obligatorias estén presentes y que 'disks'
-sea un mapa con al menos un disco declarado.
+sea un mapa de discos.
+'disks' puede faltar, venir nulo o ser un mapa vacio: la maquina todavia no
+declara ningun disco, que es el caso de un fichero recien creado o de una
+maquina a la que se le retiran todos. Solo se rechaza si trae otra cosa que
+un mapa (una lista o un valor simple).
 Acumula todos los errores del bloque, sin detenerse en el primero.
 
 #### Arguments
@@ -252,7 +256,7 @@ Acumula todos los errores del bloque, sin detenerse en el primero.
 #### Exit codes
 
 * **0**: El bloque cumple lo obligatorio.
-* **1**: Falta alguna clave obligatoria o 'disks' no es un mapa con discos.
+* **1**: Falta alguna clave obligatoria o 'disks' no es un mapa.
 
 #### Output on stderr
 

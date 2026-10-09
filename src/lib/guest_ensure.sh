@@ -31,6 +31,7 @@ ORIG_ARGS=("$@")
 PROBE=0
 RELEASE=0
 DEVICE_OPT=""
+SERIAL_OPT=""
 SIZE_MB=""
 MOUNT=""
 FSTYPE=""
@@ -45,7 +46,7 @@ usage() {
     cat <<'EOF'
 Uso: guest_ensure.sh [--probe | --release] --size-mb N --mount /ruta
                      --fstype ext4|xfs --label ETIQUETA
-                     [--device /dev/sdX] [--passfile archivo]
+                     [--serial UUID] [--device /dev/sdX] [--passfile archivo]
 EOF
 }
 
@@ -76,6 +77,10 @@ while (($#)); do
             ;;
         --device)
             DEVICE_OPT="${2:-}"
+            shift
+            ;;
+        --serial)
+            SERIAL_OPT="${2:-}"
             shift
             ;;
         --passfile)
@@ -335,19 +340,51 @@ detect_by_size() {
     return 0
 }
 
-# @description La etiqueta declarada, y si el disco aun no la tiene, la pista
-# del host y despues el tamano. Devuelve 1 sin tocar el sistema; quien decide
-# si el fallo detiene la corrida es el flujo principal.
+# @description El disco que el hipervisor identifica con el numero de serie
+# que publica en el invitado para el medio declarado. VirtualBox lo compone
+# como "VB" mas los ocho primeros caracteres del UUID del medio y un sufijo
+# de control, y el host conoce ese UUID: con varios discos recien creados del
+# mismo tamano, sin etiqueta y sin montar, el numero de serie los desempata
+# sin arriesgarse a formatear otro disco.
+# @noargs
+# @set G_DEV string Disco identificado.
+# @stderr No avisa; la ambiguedad o la ausencia las reporta detect_device.
+# @exitcode 0 Un unico disco con ese numero de serie; deja el disco en G_DEV.
+# @exitcode 1 Sin --serial o sin coincidencia.
+device_from_serial() {
+    local want name size type serial
+    [[ -n "$SERIAL_OPT" ]] || return 1
+    want="VB$(printf '%s' "$SERIAL_OPT" | tr -d '-' | cut -c1-8)"
+    [[ "$want" != "VB" ]] || return 1
+    while read -r name size type serial; do
+        [[ "$type" == "disk" ]] || continue
+        [[ -n "$serial" ]] || continue
+        if [[ "${serial^^}" == "${want^^}" || "${serial^^}" == "${want^^}"-* ]]; then
+            G_DEV="/dev/$name"
+            return 0
+        fi
+    done < <(lsblk -b -dn -o NAME,SIZE,TYPE,SERIAL)
+    return 1
+}
+
+# @description La etiqueta declarada, y si el disco aun no la tiene, el numero
+# de serie del medio, la pista del host y despues el tamano. Devuelve 1 sin
+# tocar el sistema; quien decide si el fallo detiene la corrida es el flujo
+# principal.
 # @noargs
 # @set G_DEV string Disco identificado.
 # @exitcode 0 Disco identificado.
 # @exitcode 1 Ningun metodo identifico el disco.
 # @see device_from_label()
+# @see device_from_serial()
 # @see device_hint_ok()
 detect_device() {
     local dev
     if [[ -n "$LABEL" ]] && dev="$(device_from_label "$LABEL")"; then
         G_DEV="$dev"
+        return 0
+    fi
+    if device_from_serial; then
         return 0
     fi
     if [[ -n "$DEVICE_OPT" ]] && device_hint_ok "$DEVICE_OPT"; then

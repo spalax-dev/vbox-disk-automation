@@ -214,11 +214,11 @@ guest_credentials_ask() {
 # @arg $2 string Nombre del disco.
 # @arg $3 string Modo del script invitado: "probe", "release" o "converge".
 # @arg $4 string Origen de los datos: "declarado" o "estado"; no vacio.
-# @set GUEST_ARGS array Argumentos para guest_run: --mount, --fstype, --label, --size-mb, --device (si hay pista) y el modo.
+# @set GUEST_ARGS array Argumentos para guest_run: --mount, --fstype, --label, --size-mb, --serial (si el medio esta adjunto), --device (si hay pista) y el modo.
 # @exitcode 0 Siempre.
 guest_disk_args() {
     local vm="$1" disk="$2" mode="$3" origin="$4"
-    local size="" mount="" fstype="" label="" hint
+    local size="" mount="" fstype="" label="" hint file uuid
     GUEST_ARGS=()
     hint="$(state_get_disk "$vm" "$disk" kv_device || true)"
     if [[ "$origin" == "estado" ]]; then
@@ -226,13 +226,29 @@ guest_disk_args() {
         mount="$(state_get_disk "$vm" "$disk" mount_point || true)"
         fstype="$(state_get_disk "$vm" "$disk" fs_type || true)"
         label="$(state_get_disk "$vm" "$disk" label || true)"
+        file="$(state_get_disk "$vm" "$disk" file || true)"
     else
         size="$(cfg_disk_size_mb "$vm" "$disk" || true)"
         mount="$(cfg_disk_get "$vm" "$disk" mount_point)"
         fstype="$(cfg_disk_get "$vm" "$disk" fs_type)"
         label="$(cfg_disk_get "$vm" "$disk" label)"
+        file="$(storage_disk_file "$vm" "$disk" || true)"
     fi
     GUEST_ARGS=(--mount "$mount" --fstype "$fstype" --label "$label" --size-mb "$size")
+    # El UUID del medio adjunto identifica el disco dentro del invitado: el
+    # hipervisor publica el numero de serie "VB" + sus ocho primeros
+    # caracteres, y sin el varios discos recien creados del mismo tamano
+    # quedarian indistinguibles para el script invitado.
+    uuid=""
+    if [[ -n "$file" ]]; then
+        uuid="$(storage_medium_uuid "$vm" "$file" 2>/dev/null || true)"
+    fi
+    if [[ -z "$uuid" ]]; then
+        uuid="$(state_get_disk "$vm" "$disk" uuid || true)"
+    fi
+    if [[ -n "$uuid" ]]; then
+        GUEST_ARGS+=(--serial "$uuid")
+    fi
     if [[ -n "$hint" ]]; then
         GUEST_ARGS+=(--device "$hint")
     fi
@@ -368,7 +384,9 @@ record_medium_size() {
 # recoger lo que el estado registra, con las credenciales que se pidan) u
 # [o]mitir. Las decisiones que retiran el montaje necesitan entrar en el
 # invitado, y como una vm ausente ya no declara credenciales, se piden en la
-# misma etapa con guest_credentials_ask.
+# misma etapa con guest_credentials_ask. Una seccion que no declara discos y
+# no tiene ninguno registrado termina en la primera etapa sin encender la
+# maquina.
 # @arg $1 string Nombre de la vm.
 # @stderr Registro de cada etapa, avisos y preguntas de confirmacion.
 # @exitcode 0 Sin cambios o convergencia verificada y registrada.
@@ -409,6 +427,15 @@ apply_vm() {
     # Etapa 1: verificacion declarativa y preparacion del host.
     cfg_vms | grep -Fxq "$vm" || declared_vm=0
     stage_begin 1 "verificacion declarativa de $vm"
+    # Una seccion sin discos declarados no pide nada: no hay con que converger
+    # ni con que verificar el invitado. Si ademas no queda registrado ninguno
+    # --el caso de un fichero recien creado-- la corrida se despide aqui sin
+    # encender la maquina.
+    if ((declared_vm)) && ((${#declared[@]} == 0)) && ((${#orphans[@]} == 0)); then
+        stage_end
+        log_info "$vm: sin discos declarados; nada que preparar en esta corrida"
+        return 0
+    fi
     # Sin trabajo pendiente en el host no hay nada que converger: apagada la
     # maquina se despide aqui mismo y encendida se anuncia, porque el sondeo
     # del invitado sigue siendo el que detecta la deriva.

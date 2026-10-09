@@ -1,8 +1,10 @@
 # vdisk.yml.example: plantilla declarativa de vboxdisk. Copie este fichero como
 # vdisk.yml (o paselo con vboxdisk apply -f FILE) y declare una maquina por
-# clave de primer nivel. Cada maquina necesita vm_user, al menos una credencial
-# (vm_pass o vm_pass_file) y la lista disks; cada disco necesita label, size,
-# fs_type y mount_point, y admite ademas file y state.
+# clave de primer nivel. Cada maquina necesita vm_user y al menos una
+# credencial (vm_pass o vm_pass_file); la lista disks puede venir vacia u
+# omitida mientras la maquina no declare ningun disco. Cada disco que se
+# declare necesita label, size, fs_type y mount_point, y admite ademas file y
+# state.
 VM1:
   vm_user: debian
   vm_pass: "cambia-esta-clave"

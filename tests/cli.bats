@@ -458,6 +458,47 @@ eliminar_env() {
     [[ "$output" != *$'\x1b['* ]]
 }
 
+# Una seccion que no declara discos no tiene con que comparar el registro:
+# el estado lo dice y los discos que el registro conserve quedan a la vista
+# como pendientes de decision.
+@test "status declara sin declarar a la seccion que no tiene discos" {
+    local file="$BATS_TEST_TMPDIR/vacio.yml"
+    printf '%s\n' \
+        'VM1:' \
+        '  vm_user: debian' \
+        '  vm_pass: "secreto"' \
+        '  disks:' \
+        >"$file"
+    run "$ENTRY" status -f "$file"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"<sin declarar>"* ]]
+    [[ "$output" == *"(sin discos)"* ]]
+    [[ "$output" != *"sin estado"* ]]
+}
+
+# Con discos todavia registrados, la seccion vacia no oculta nada: el estado
+# dice que no se declara nada y la columna de discos cuenta los que quedan
+# pendientes de decision.
+@test "status cuenta los discos registrados de una seccion sin declarar" {
+    local file="$BATS_TEST_TMPDIR/vacio.yml"
+    mkdir -p "$VBOXDISK_STATE_DIR"
+    printf '%s\n' \
+        '[VM1]' \
+        'disks.disk1.state=active' \
+        'disks.disk1.size_mb=4096' \
+        >"$VBOXDISK_STATE_DIR/state.lock"
+    printf '%s\n' \
+        'VM1:' \
+        '  vm_user: debian' \
+        '  vm_pass: "secreto"' \
+        '  disks:' \
+        >"$file"
+    run "$ENTRY" status -f "$file"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"<sin declarar>"* ]]
+    [[ "$output" == *"1 por resolver"* ]]
+}
+
 @test "status pinta la cabecera en negrita y el estado de sincronizacion" {
     export VBOXDISK_COLOR=always
     run "$ENTRY" status -f "$FIX/valid.yml"
@@ -737,6 +778,97 @@ conforme_env() {
     unset VBOXDISK_MOCK_VMSTATE
 }
 
+# La maquina declarada sin discos no ofrece trabajo alguno: el plan lo dice
+# y la corrida real se despide antes de encender nada.
+@test "apply --dry-run dice sin cambios cuando la seccion no declara discos" {
+    local file="$BATS_TEST_TMPDIR/vacio.yml"
+    printf '%s\n' \
+        'VM1:' \
+        '  vm_user: debian' \
+        '  vm_pass: "secreto"' \
+        '  disks:' \
+        >"$file"
+    run "$ENTRY" apply --dry-run -f "$file"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"VM1: sin cambios: la seccion no declara ningun disco"* ]]
+    [[ "$output" != *"primera aplicacion"* ]]
+    [[ "$output" != *"requiere decision"* ]]
+}
+
+@test "apply_vm de una seccion sin discos termina sin preparar nada" {
+    local file="$BATS_TEST_TMPDIR/vacio.yml"
+    export VBOXDISK_FILE="$file"
+    export VBOXDISK_MOCK_LOG="$BATS_TEST_TMPDIR/mock.log"
+    printf '%s\n' \
+        'VM1:' \
+        '  vm_user: debian' \
+        '  vm_pass: "secreto"' \
+        '  disks:' \
+        >"$file"
+    source "$REPO/src/lib/common.sh"
+    source "$REPO/src/lib/config.sh"
+    source "$REPO/src/lib/state.sh"
+    source "$REPO/src/lib/vbox.sh"
+    source "$REPO/src/lib/storage.sh"
+    source "$REPO/src/lib/apply.sh"
+    run apply_vm VM1
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"VM1: sin discos declarados; nada que preparar en esta corrida"* ]]
+    [[ "$output" != *"convergencia verificada"* ]]
+    if [[ -f "$VBOXDISK_MOCK_LOG" ]]; then
+        ! grep -q "^startvm" "$VBOXDISK_MOCK_LOG"
+        ! grep -q "^guestcontrol" "$VBOXDISK_MOCK_LOG"
+        ! grep -q "^modifymedium" "$VBOXDISK_MOCK_LOG"
+    fi
+}
+
+# Quien vacia la seccion lo hace para retirar todos los discos: la decision se
+# toma sobre el huerfano que queda registrado y -y la resuelve como eliminar,
+# sin preguntar y sin dejar rastro del disco en el estado.
+@test "apply -y retira el disco registrado cuando la seccion quedo sin discos" {
+    local file="$BATS_TEST_TMPDIR/vdisk.yml" disk="$BATS_TEST_TMPDIR/disk1.vdi"
+    export VBOXDISK_FILE="$file"
+    export VBOXDISK_MOCK_LOG="$BATS_TEST_TMPDIR/mock.log"
+    export VBOXDISK_MOCK_STATE="$BATS_TEST_TMPDIR/adjuntos"
+    export VBOXDISK_MOCK_IP=192.168.1.16
+    export VBOXDISK_MOCK_GA_VERSION=7.2.18
+    export VBOXDISK_ASSUME_YES=1
+    export GUEST_SCRIPT="$REPO/src/lib/guest_ensure.sh"
+    unset VBOXDISK_MOCK_VMSTATE 2>/dev/null || true
+    printf '%s\n' \
+        'VM1:' \
+        '  vm_user: debian' \
+        '  vm_pass: "secreto"' \
+        '  disks:' \
+        >"$file"
+    mkdir -p "$VBOXDISK_STATE_DIR"
+    printf '%s\n' \
+        '[VM1]' \
+        'disks.disk1.state=active' \
+        "disks.disk1.file=$disk" \
+        'disks.disk1.size_mb=4096' \
+        'disks.disk1.label=datos-vm1' \
+        'disks.disk1.fs_type=ext4' \
+        'disks.disk1.mount_point=/mnt/datos' \
+        >"$VBOXDISK_STATE_DIR/state.lock"
+    printf '4096\n' >"$disk"
+    source "$REPO/src/lib/common.sh"
+    source "$REPO/src/lib/config.sh"
+    source "$REPO/src/lib/state.sh"
+    source "$REPO/src/lib/vbox.sh"
+    source "$REPO/src/lib/storage.sh"
+    source "$REPO/src/lib/apply.sh"
+    run apply_vm VM1
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"confirmacion omitida por -y"* ]]
+    [[ "$output" == *"esta registrado y ya no figura en el archivo declarativo"* ]]
+    [[ "$output" == *"convergencia verificada"* ]]
+    # El disco se desmonta, se desprende y se borra: no queda ni el fichero
+    # ni la clave en el registro.
+    [ ! -f "$disk" ]
+    ! grep -q "^disks\.disk1\." "$VBOXDISK_STATE_DIR/state.lock"
+}
+
 @test "apply --dry-run anuncia el trabajo del host sin culpar a la huella" {
     conforme_env 4096 2048
     run "$ENTRY" apply --dry-run -f "$VBOXDISK_FILE"
@@ -779,6 +911,42 @@ conforme_env() {
     [ "$(cat "$BATS_TEST_TMPDIR/disk1.vdi")" = "8192" ]
     [ "$(state_get_disk VM1 disk1 size_mb)" = "8192" ]
     [ "$(state_get_disk VM1 disk1 fingerprint)" = "$(storage_disk_fingerprint VM1 "$BATS_TEST_TMPDIR/disk1.vdi")" ]
+}
+
+# El host resuelve el UUID del medio adjunto y se lo manda al script invitado:
+# VirtualBox publica en el invitado la serie "VB" mas los ocho primeros
+# caracteres de ese UUID, que es lo unico que separa a varios discos recien
+# creados, del mismo tamano, sin etiqueta y sin montar. Sin la serie el
+# sondeo se queda en el tamano y se declara ambiguo.
+@test "apply envia al invitado el numero de serie del medio declarado" {
+    tamano_env 8192 4096
+    export VBOXDISK_MOCK_LOG="$BATS_TEST_TMPDIR/mock.log"
+    export VBOXDISK_MOCK_STATE="$BATS_TEST_TMPDIR/adjuntos"
+    export VBOXDISK_MOCK_IP=192.168.1.16
+    export VBOXDISK_MOCK_GA_VERSION=7.2.18
+    export GUEST_SCRIPT="$REPO/src/lib/guest_ensure.sh"
+    unset VBOXDISK_MOCK_VMSTATE VBOXDISK_ASSUME_YES 2>/dev/null || true
+    source "$REPO/src/lib/common.sh"
+    source "$REPO/src/lib/config.sh"
+    source "$REPO/src/lib/state.sh"
+    source "$REPO/src/lib/vbox.sh"
+    source "$REPO/src/lib/storage.sh"
+    source "$REPO/src/lib/apply.sh"
+    run apply_vm VM1
+    [ "$status" -eq 0 ]
+    # El disco ocupa el puerto 1 del doble: su medio es aaaaaaaa-...-000000000001.
+    grep -q -- '--serial aaaaaaaa-0000-0000-0000-000000000001' "$VBOXDISK_MOCK_LOG"
+    # La serie viaja solo en las invocaciones del script invitado.
+    grep -q "^guestcontrol VM1 .*run .*--serial aaaaaaaa-0000-0000-0000-000000000001 " "$VBOXDISK_MOCK_LOG"
+}
+
+# La bandera se escribe en el host y se lee en el invitado sin compilar
+# juntos: si los dos extremos se ponen de acuerdo en otro nombre, el disco
+# vuelve a quedar indistinguible y nadie se entera hasta la corrida real.
+@test "el script invitado admite el numero de serie del medio" {
+    run bash "$REPO/src/lib/guest_ensure.sh" --help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"--serial UUID"* ]]
 }
 
 @test "apply termina con 3 cuando lo declarado es menor que el medio" {

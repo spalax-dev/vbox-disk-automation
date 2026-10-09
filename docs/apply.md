@@ -139,7 +139,7 @@ del archivo.
 
 #### Variables set
 
-* **GUEST_ARGS** (array): Argumentos para guest_run: --mount, --fstype, --label, --size-mb, --device (si hay pista) y el modo.
+* **GUEST_ARGS** (array): Argumentos para guest_run: --mount, --fstype, --label, --size-mb, --serial (si el medio esta adjunto), --device (si hay pista) y el modo.
 
 #### Exit codes
 
@@ -246,7 +246,9 @@ etapa con [e]liminar, [i]nactivar, [s]incronizar (el archivo vuelve a
 recoger lo que el estado registra, con las credenciales que se pidan) u
 [o]mitir. Las decisiones que retiran el montaje necesitan entrar en el
 invitado, y como una vm ausente ya no declara credenciales, se piden en la
-misma etapa con guest_credentials_ask.
+misma etapa con guest_credentials_ask. Una seccion que no declara discos y
+no tiene ninguno registrado termina en la primera etapa sin encender la
+maquina.
 
 #### Arguments
 

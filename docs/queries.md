@@ -17,6 +17,9 @@ volveria a converger. Coincidiendo el hash, aun asi se declara
 desincronizada si el host conserva trabajo pendiente (discos por crear o
 adjuntar, medio mas pequeno que lo declarado o disco inactivo), porque es
 trabajo que apply tambien vuelve a aplicar.
+Sin ningun disco declarado el resultado es "<sin declarar>": no hay con que
+comparar el registro, y lo que este guarde para la vm queda pendiente de la
+decision que apply toma sobre los discos huerfanos.
 
 #### Example
 
@@ -37,9 +40,10 @@ trabajo que apply tambien vuelve a aplicar.
 
 #### Output on stdout
 
-* Una de estas cadenas, sin salto de línea: "sin estado" (sin registro
-  previo), "sincronizada" o "desincronizada", esta ultima con los cambios en
-  parentesis, p. ej. "desincronizada (disco1: tamano, etiqueta)".
+* Una de estas cadenas, sin salto de línea: "<sin declarar>" (la vm no
+  declara discos), "sin estado" (sin registro previo), "sincronizada" o
+  "desincronizada", esta ultima con los cambios en parentesis, p. ej.
+  "desincronizada (disco1: tamano, etiqueta)".
 
 ### vm_status_disks
 
@@ -131,7 +135,8 @@ _Function has no arguments._
 * Cabecera MAQUINA, ESTADO, DISCOS y DIRECCION_IP y una fila por vm
   declarada en el archivo. En terminal la cabecera va en negrita y la celda
   de ESTADO pinta según el valor: verde sincronizada, amarillo
-  desincronizada y tenue sin estado; la bitácora y lo redirigido van planos.
+  desincronizada y tenue sin estado o sin declarar; la bitácora y lo
+  redirigido van planos.
   Cada columna se ajusta al ancho de su celda más larga, así que DISCOS y
   DIRECCION_IP quedan juntas cuando los valores son cortos.
 

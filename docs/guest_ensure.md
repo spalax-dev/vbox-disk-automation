@@ -9,6 +9,7 @@
 * [device_from_label](#device_from_label)
 * [device_hint_ok](#device_hint_ok)
 * [detect_by_size](#detect_by_size)
+* [device_from_serial](#device_from_serial)
 * [detect_device](#detect_device)
 * [collect](#collect)
 * [wait_for_partition](#wait_for_partition)
@@ -194,11 +195,36 @@ _Function has no arguments._
 
 * Explica la ambiguedad o la ausencia de candidatos.
 
+### device_from_serial
+
+El disco que el hipervisor identifica con el numero de serie
+que publica en el invitado para el medio declarado. VirtualBox lo compone
+como "VB" mas los ocho primeros caracteres del UUID del medio y un sufijo
+de control, y el host conoce ese UUID: con varios discos recien creados del
+mismo tamano, sin etiqueta y sin montar, el numero de serie los desempata
+sin arriesgarse a formatear otro disco.
+
+_Function has no arguments._
+
+#### Variables set
+
+* **G_DEV** (string): Disco identificado.
+
+#### Exit codes
+
+* **0**: Un unico disco con ese numero de serie; deja el disco en G_DEV.
+* **1**: Sin --serial o sin coincidencia.
+
+#### Output on stderr
+
+* No avisa; la ambiguedad o la ausencia las reporta detect_device.
+
 ### detect_device
 
-La etiqueta declarada, y si el disco aun no la tiene, la pista
-del host y despues el tamano. Devuelve 1 sin tocar el sistema; quien decide
-si el fallo detiene la corrida es el flujo principal.
+La etiqueta declarada, y si el disco aun no la tiene, el numero
+de serie del medio, la pista del host y despues el tamano. Devuelve 1 sin
+tocar el sistema; quien decide si el fallo detiene la corrida es el flujo
+principal.
 
 _Function has no arguments._
 
@@ -214,6 +240,7 @@ _Function has no arguments._
 #### See also
 
 * [device_from_label()](#device_from_label)
+* [device_from_serial()](#device_from_serial)
 * [device_hint_ok()](#device_hint_ok)
 
 ### collect

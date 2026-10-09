@@ -1,5 +1,8 @@
 VM1:
-  vm_user: debian
   vm_pass: "secreto"
-  mount_point: /mnt/datos
-  fs_type: ext4
+  disks:
+    disk1:
+      size: 4g
+      fs_type: ext4
+      mount_point: /mnt/datos
+      label: datos-vm1

@@ -2,7 +2,7 @@
 
 Referencia de la API de `src/lib/`, generada con `make docs` (shdoc).
 
-Las 168 funciones de las 9 bibliotecas, cada una con su descripción,
+Las 169 funciones de las 9 bibliotecas, cada una con su descripción,
 argumentos, variables de entorno, códigos de salida y ejemplos.
 
 ## Bibliotecas
@@ -11,7 +11,7 @@ argumentos, variables de entorno, códigos de salida y ejemplos.
 - [`src/lib/cli.sh`](cli.md) (5 funciones)
 - [`src/lib/common.sh`](common.md) (36 funciones)
 - [`src/lib/config.sh`](config.md) (22 funciones)
-- [`src/lib/guest_ensure.sh`](guest_ensure.md) (18 funciones)
+- [`src/lib/guest_ensure.sh`](guest_ensure.md) (19 funciones)
 - [`src/lib/queries.sh`](queries.md) (7 funciones)
 - [`src/lib/state.sh`](state.md) (16 funciones)
 - [`src/lib/storage.sh`](storage.md) (34 funciones)
@@ -112,6 +112,7 @@ argumentos, variables de entorno, códigos de salida y ejemplos.
 - [`device_from_label()`](guest_ensure.md#device_from_label)
 - [`device_hint_ok()`](guest_ensure.md#device_hint_ok)
 - [`detect_by_size()`](guest_ensure.md#detect_by_size)
+- [`device_from_serial()`](guest_ensure.md#device_from_serial)
 - [`detect_device()`](guest_ensure.md#detect_device)
 - [`collect()`](guest_ensure.md#collect)
 - [`wait_for_partition()`](guest_ensure.md#wait_for_partition)

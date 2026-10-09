@@ -719,12 +719,17 @@ storage_plan_vm() {
         else
             plan="la vm ya no figura en el archivo declarativo y no tiene decisiones pendientes"
         fi
+    elif ((orphans > 0)); then
+        # La decision sobre los discos registrados que ya no se declaran es lo
+        # primero que hace apply, antes que cualquier otro trabajo, y por eso
+        # encabeza el plan aunque ademas haya cambios declarados.
+        plan="discos registrados pendientes de decision"
+    elif [[ -z "$(cfg_disk_keys "$vm" "$VBOXDISK_FILE")" ]]; then
+        plan="sin cambios: la seccion no declara ningun disco"
     elif [[ -z "$stored" ]]; then
         plan="primera aplicacion: preparar el almacenamiento declarado"
     elif [[ "$desired" != "$stored" ]]; then
         plan="cambios declarados pendientes respecto del ultimo registro"
-    elif ((orphans > 0)); then
-        plan="discos registrados pendientes de decision"
     elif [[ -n "$pendientes" ]]; then
         plan="trabajo pendiente en el almacenamiento"
     elif [[ "$fp" != "$stored_fp" ]]; then
