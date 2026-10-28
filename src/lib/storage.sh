@@ -36,7 +36,9 @@ storage_disk_desired_hash() {
 }
 
 # @description Fichero .vdi de un disco declarado. Si el archivo no fija 'file',
-# el nombre sale del directorio de la maquina y de la clave del disco.
+# el nombre sale del directorio de la maquina y de la clave del disco. Si el
+# disco es una referencia multiattach por nombre, la ruta se hereda de su
+# definición.
 # @arg $1 string Nombre de la vm.
 # @arg $2 string Clave del disco declarado.
 # @stdout Ruta del fichero .vdi, sin salto de linea.
@@ -56,6 +58,196 @@ storage_disk_file() {
     fi
     log_error "$vm: no se pudo derivar el fichero del disco '$disk'; declare 'file' o revise la maquina en el hipervisor"
     return 1
+}
+
+# @description UUID que el hipervisor asigna a un medio, leído de
+# showmediuminfo. Es la raíz de la cadena de imágenes de diferenciación de un
+# disco multiattach.
+# @arg $1 path Ruta del fichero del medio.
+# @stdout UUID sin salto de linea; vacio si el medio no se pudo consultar.
+# @exitcode 0 Siempre; la ausencia de UUID se detecta por la salida vacia.
+storage_medium_uuid_of() {
+    VBoxManage showmediuminfo disk "$1" 2>/dev/null |
+        awk '$1 == "UUID:" { print $2; exit }' || true
+}
+
+# @description UUID del medio padre de una imagen de diferenciación, leído de
+# showmediuminfo. Un medio base imprime "base".
+# @arg $1 string UUID del medio.
+# @stdout UUID del padre o "base"; vacio si no se pudo consultar.
+# @exitcode 0 Siempre.
+storage_medium_parent_of() {
+    VBoxManage showmediuminfo disk "$1" 2>/dev/null |
+        awk '$1 == "Parent" && $2 == "UUID:" { print $3; exit }' || true
+}
+
+# @description Tipo de escritura del medio (normal, multiattach, ...), leído de
+# showmediuminfo.
+# @arg $1 path Ruta del fichero del medio.
+# @stdout Tipo en minusculas; vacio si no se pudo consultar.
+# @exitcode 0 Siempre.
+storage_medium_type() {
+    VBoxManage showmediuminfo disk "$1" 2>/dev/null |
+        awk '$1 == "Type:" { print tolower($2); exit }' || true
+}
+
+# @description Indica si un medio base tiene imagenes de diferenciacion. Para
+# un disco multiattach, cada maquina adjunta crea una y su tamano no sigue a
+# una ampliacion posterior del medio base.
+# @arg $1 path Ruta del fichero del medio.
+# @exitcode 0 El medio tiene al menos una imagen hija.
+# @exitcode 1 No tiene hijas o no se pudo consultar.
+storage_medium_has_children() {
+    local out
+    out="$(VBoxManage showmediuminfo disk "$1" 2>/dev/null || true)"
+    grep -q '^Child UUIDs:' <<<"$out"
+}
+
+# @description Indica si un UUID de medio desciende de otro por la cadena de
+# imagenes de diferenciacion. La comparacion es estricta: el propio UUID base
+# no cuenta como descendiente.
+# @arg $1 string UUID del medio base.
+# @arg $2 string UUID del medio candidato.
+# @exitcode 0 El candidato es hijo, nieto, etc. del base.
+# @exitcode 1 No desciende del base o la cadena no se pudo leer.
+storage_medium_descends_from() {
+    local base="$1" cur="$2" parent i
+    [[ -n "$base" && -n "$cur" && "$cur" != "$base" ]] || return 1
+    for ((i = 0; i < 32; i++)); do
+        parent="$(storage_medium_parent_of "$cur")"
+        [[ -n "$parent" && "$parent" != "base" ]] || return 1
+        if [[ "$parent" == "$base" ]]; then
+            return 0
+        fi
+        cur="$parent"
+    done
+    return 1
+}
+
+# @description Indica si un candidato pertenece a la familia de un medio base,
+# siguiendo la cadena de padres de las imagenes de diferenciacion.
+# @arg $1 path Ruta del fichero del medio base.
+# @arg $2 string UUID del candidato.
+# @exitcode 0 El candidato desciende del medio base.
+# @exitcode 1 No desciende o el medio base no se pudo consultar.
+storage_medium_in_family() {
+    local base
+    base="$(storage_medium_uuid_of "$1")"
+    [[ -n "$base" ]] || return 1
+    storage_medium_descends_from "$base" "$2"
+}
+
+# @description Enumera las maquinas del hipervisor que tienen adjunto un medio,
+# ya sea directamente o a traves de una imagen de diferenciacion. Excluye la
+# maquina indicada.
+# @arg $1 path Ruta del fichero del medio base.
+# @arg $2 string Nombre de la vm que se excluye.
+# @stdout Un nombre de vm por linea; nada si ninguna otra lo usa.
+# @exitcode 0 Siempre.
+storage_medium_other_users() {
+    local disk="$1" skip="$2" vm
+    while IFS= read -r vm; do
+        [[ -n "$vm" && "$vm" != "$skip" ]] || continue
+        if storage_disk_attached "$vm" "$disk"; then
+            printf '%s\n' "$vm"
+        fi
+    done < <(VBoxManage list vms 2>/dev/null | awk -F'"' 'NF >= 2 { print $2 }')
+}
+
+# @description Enumera los discos de otras vm del archivo declarativo que
+# apuntan al mismo fichero, aunque todavia no esten adjuntos. Protege un medio
+# multiattach de borrarse mientras otra maquina lo referencia por nombre.
+# @arg $1 path Ruta del fichero base.
+# @arg $2 string Nombre de la vm que se excluye.
+# @stdout Un "<vm>/<disco>" por linea; nada si ninguna otra lo declara.
+# @exitcode 0 Siempre.
+storage_medium_declared_elsewhere() {
+    local file="$1" skip="$2" vm disk other
+    while IFS= read -r vm; do
+        [[ -n "$vm" && "$vm" != "$skip" ]] || continue
+        while IFS= read -r disk; do
+            [[ -n "$disk" ]] || continue
+            other="$(storage_disk_file "$vm" "$disk" 2>/dev/null || true)"
+            if [[ -n "$other" && "$other" == "$file" ]]; then
+                printf '%s/%s\n' "$vm" "$disk"
+            fi
+        done < <(cfg_disk_keys "$vm" "$VBOXDISK_FILE")
+    done < <(cfg_vms)
+}
+
+# @description Ruta del medio efectivamente adjunto a la maquina para un disco
+# declarado. En un disco normal coincide con su fichero; en un disco
+# multiattach es la imagen de diferenciacion privada de esa maquina.
+# @arg $1 string Nombre de la vm en el hipervisor.
+# @arg $2 path Ruta del fichero base declarado.
+# @stdout Ruta del medio adjunto, sin salto de linea.
+# @exitcode 0 Hay una adjuncion.
+# @exitcode 1 El disco no figura adjunto o no se pudo consultar la vm.
+storage_attached_medium() {
+    local vm="$1" disk="$2" info path base key uuid
+    info="$(VBoxManage showvminfo "$vm" --machinereadable 2>/dev/null)" || return 1
+    path="$(printf '%s\n' "$info" |
+        awk -F'"' -v d="$disk" '$4 == d { print $4; exit }')"
+    if [[ -n "$path" ]]; then
+        printf '%s' "$path"
+        return 0
+    fi
+    base="$(storage_medium_uuid_of "$disk")"
+    [[ -n "$base" ]] || return 1
+    while IFS=$'\t' read -r key uuid path; do
+        [[ -n "$key" && -n "$uuid" && -n "$path" ]] || continue
+        if storage_medium_descends_from "$base" "$uuid"; then
+            printf '%s' "$path"
+            return 0
+        fi
+    done < <(printf '%s\n' "$info" | awk -F'"' '
+        $2 ~ /^[^-]+-[0-9]+-[0-9]+$/ && $4 != "none" { p[$2] = $4; next }
+        $2 ~ /-ImageUUID-[0-9]+-[0-9]+$/ {
+            s = $2
+            sub(/-ImageUUID-/, "-", s)
+            if (s in p) print s "\t" $4 "\t" p[s]
+        }')
+    return 1
+}
+
+# @description Medio que debe adjuntarse para un disco multiattach: la imagen
+# de diferenciación registrada en state.lock si sigue existiendo y pertenece al
+# medio base, o el propio medio base cuando hay que crear una nueva.
+# @arg $1 string Nombre de la vm.
+# @arg $2 string Clave del disco.
+# @arg $3 path Ruta del fichero base declarado.
+# @stdout Ruta del medio a adjuntar, sin salto de linea.
+# @exitcode 0 Siempre.
+# @see storage_attached_medium()
+storage_effective_medium() {
+    local vm="$1" disk_key="$2" base="$3" saved base_type
+    if [[ -z "$disk_key" ]]; then
+        printf '%s' "$base"
+        return 0
+    fi
+    base_type="$(storage_medium_type "$base")"
+    if [[ "$base_type" != "multiattach" ]]; then
+        printf '%s' "$base"
+        return 0
+    fi
+    saved="$(state_get_disk "$vm" "$disk_key" medium_file || true)"
+    if [[ -z "$saved" ]]; then
+        printf '%s' "$base"
+        return 0
+    fi
+    if [[ ! -f "$saved" ]]; then
+        log_warn "$vm/$disk_key: la imagen de diferenciacion registrada ya no existe ($saved); se creara una nueva"
+        printf '%s' "$base"
+        return 0
+    fi
+    if [[ "$saved" != "$base" ]] &&
+        storage_medium_in_family "$base" "$(storage_medium_uuid_of "$saved")"; then
+        printf '%s' "$saved"
+        return 0
+    fi
+    log_warn "$vm/$disk_key: la imagen de diferenciacion registrada no pertenece a $base; se creara una nueva"
+    printf '%s' "$base"
+    return 0
 }
 
 # @description Huella fisica de toda la configuracion de almacenamiento de la
@@ -107,26 +299,43 @@ storage_disk_fingerprint() {
 }
 
 # @description Indica si showvminfo ya menciona el fichero, es decir, si el
-# disco esta adjunto a la maquina.
+# disco esta adjunto a la maquina. En un disco multiattach showvminfo publica
+# la imagen de diferenciación y no el fichero base, de modo que la busqueda
+# directa se completa siguiendo la cadena de padres de cada medio adjunto.
 # @arg $1 string Nombre de la vm en el hipervisor.
 # @arg $2 path Ruta del fichero .vdi.
 # @exitcode 0 El disco figura adjunto.
 # @exitcode 1 El disco no figura adjunto o no se pudo consultar la vm.
 storage_disk_attached() {
-    local vm="$1" disk="$2"
-    VBoxManage showvminfo "$vm" --machinereadable 2>/dev/null |
-        grep -F "\"$disk\"" >/dev/null
+    local vm="$1" disk="$2" info base uuid
+    info="$(VBoxManage showvminfo "$vm" --machinereadable 2>/dev/null)" || return 1
+    if printf '%s\n' "$info" | grep -F "\"$disk\"" >/dev/null; then
+        return 0
+    fi
+    base="$(storage_medium_uuid_of "$disk")"
+    [[ -n "$base" ]] || return 1
+    while IFS= read -r uuid; do
+        [[ -n "$uuid" ]] || continue
+        if storage_medium_descends_from "$base" "$uuid"; then
+            return 0
+        fi
+    done < <(printf '%s\n' "$info" |
+        awk -F'"' '$2 ~ /-ImageUUID-[0-9]+-[0-9]+$/ { print $4 }')
+    return 1
 }
 
 # @description Imprime donde esta adjunto el fichero. En el formato legible por
 # maquina la linea de adjuncion es "CTL-N-0"="<fichero>": la clave lleva
-# comillas, por lo que el fichero es el cuarto campo.
+# comillas, por lo que el fichero es el cuarto campo. Cuando el fichero base es
+# un disco multiattach, showvminfo publica la imagen de diferenciación y la
+# adjuncion se localiza siguiendo la cadena de padres.
 # @arg $1 string Nombre de la vm en el hipervisor.
 # @arg $2 path Ruta del fichero .vdi.
 # @stdout "<controlador> <puerto>" sin salto de linea; sin adjuncion no imprime nada.
 storage_attachment() {
-    local vm="$1" disk="$2"
-    VBoxManage showvminfo "$vm" --machinereadable 2>/dev/null |
+    local vm="$1" disk="$2" info att base key uuid slot rest ctl port
+    info="$(VBoxManage showvminfo "$vm" --machinereadable 2>/dev/null)" || return 1
+    att="$(printf '%s\n' "$info" |
         awk -F'"' -v d="$disk" '
             $4 == d {
                 slot = $2
@@ -135,30 +344,61 @@ storage_attachment() {
                     printf "%s %s", a[1], a[2]
                     exit
                 }
-            }'
+            }')"
+    if [[ -n "$att" ]]; then
+        printf '%s' "$att"
+        return 0
+    fi
+    base="$(storage_medium_uuid_of "$disk")"
+    [[ -n "$base" ]] || return 0
+    while IFS=$'\t' read -r key uuid; do
+        [[ -n "$key" && -n "$uuid" ]] || continue
+        if storage_medium_descends_from "$base" "$uuid"; then
+            slot="${key/-ImageUUID-/-}"
+            rest="${slot%-*}"
+            port="${rest##*-}"
+            ctl="${rest%-*}"
+            printf '%s %s' "$ctl" "$port"
+            return 0
+        fi
+    done < <(printf '%s\n' "$info" |
+        awk -F'"' '$2 ~ /-ImageUUID-[0-9]+-[0-9]+$/ { print $2 "\t" $4 }')
+    return 0
 }
 
 # @description Identificador del medio en el hipervisor (ImageUUID del puerto
-# donde esta adjunto el fichero).
+# donde esta adjunto el fichero). En un disco multiattach es el UUID de la
+# imagen de diferenciación efectivamente adjunta, que es la que ve el invitado.
 # @arg $1 string Nombre de la vm en el hipervisor.
 # @arg $2 path Ruta del fichero .vdi, que debe figurar adjunto.
 # @stdout UUID del medio con salto de linea.
 # @exitcode 0 UUID impreso.
 # @exitcode 1 El fichero no figura adjunto o no se pudo consultar la vm.
 storage_medium_uuid() {
-    local vm="$1" disk="$2" info slot
+    local vm="$1" disk="$2" info slot base key uuid
     if ! info="$(VBoxManage showvminfo "$vm" --machinereadable 2>/dev/null)"; then
         return 1
     fi
     slot="$(printf '%s\n' "$info" |
         awk -F'"' -v d="$disk" \
             '$4 == d && $2 ~ /^[^-]+-[0-9]+-[0-9]+$/ { print $2; exit }')"
-    if [[ -z "$slot" ]]; then
-        return 1
+    if [[ -n "$slot" ]]; then
+        printf '%s\n' "$info" |
+            awk -F'"' -v ctl="${slot%%-*}" -v rest="${slot#*-}" \
+                '$2 == ctl "-ImageUUID-" rest { print $4; exit }'
+        return 0
     fi
-    printf '%s\n' "$info" |
-        awk -F'"' -v ctl="${slot%%-*}" -v rest="${slot#*-}" \
-            '$2 == ctl "-ImageUUID-" rest { print $4; exit }'
+    base="$(storage_medium_uuid_of "$disk")"
+    [[ -n "$base" ]] || return 1
+    while IFS=$'\t' read -r key uuid; do
+        [[ -n "$key" && -n "$uuid" ]] || continue
+        if storage_medium_descends_from "$base" "$uuid"; then
+            printf '%s\n' "$uuid"
+            return 0
+        fi
+    done < <(printf '%s\n' "$info" |
+        awk -F'"' '$2 ~ /-ImageUUID-[0-9]+-[0-9]+$/ { print $2 "\t" $4 }')
+    return 1
 }
 
 # @description Indice numerico del controlador en las claves
@@ -361,14 +601,148 @@ storage_ensure_size() {
     return 0
 }
 
+# @description Adjunta un medio a la maquina en un puerto libre, ampliando el
+# controlador si hace falta. El tipo de medio solo se pasa cuando se quiere
+# forzar multiattach; una imagen de diferenciación se adjunta con su tipo
+# normal.
+# @arg $1 string Nombre de la vm en el hipervisor.
+# @arg $2 path Ruta del fichero del medio.
+# @arg $3 string Tipo de medio opcional (p. ej. multiattach).
+# @stderr log_info, log_error y la salida cruda de VBoxManage.
+# @exitcode 0 El medio quedo adjunto.
+# @exitcode 3 VBOXDISK_E_STORAGE: sin puerto libre o fallo al adjuntar.
+# @see storage_pick_port()
+# @see storage_ensure_portcount()
+storage_attach_medium() {
+    local vm="$1" disk="$2" mtype="${3:-}" pick ctl port out rc
+    pick="$(storage_pick_port "$vm")" || return "$?"
+    ctl="${pick% *}"
+    port="${pick##* }"
+    if ! storage_ensure_portcount "$vm" "$ctl" "$port"; then
+        return "$VBOXDISK_E_STORAGE"
+    fi
+    log_info "$vm: adjuntando $disk en el controlador $ctl, puerto $port"
+    rc=0
+    if [[ -n "$mtype" ]]; then
+        out="$(VBoxManage storageattach "$vm" --storagectl "$ctl" \
+            --port "$port" --device 0 --type hdd --medium "$disk" --mtype "$mtype" 2>&1)" || rc=$?
+    else
+        out="$(VBoxManage storageattach "$vm" --storagectl "$ctl" \
+            --port "$port" --device 0 --type hdd --medium "$disk" 2>&1)" || rc=$?
+    fi
+    log_raw "$out"
+    if ((rc != 0)); then
+        log_error "$vm: fallo al adjuntar $disk en $ctl-$port"
+        return "$VBOXDISK_E_STORAGE"
+    fi
+    return 0
+}
+
+# @description Deja un medio listo para multiattach. VirtualBox solo admite el
+# tipo multiattach en medios que ya han estado registrados con una maquina, de
+# modo que un medio nuevo se adjunta y se desprende una vez antes de cambiar
+# el tipo. Si el medio esta adjunto a otra maquina se detiene la corrida: no se
+# convierte en caliente un disco en uso por otra vm.
+# @arg $1 string Nombre de la vm en el hipervisor.
+# @arg $2 path Ruta del fichero del medio base.
+# @stderr log_info, log_error y la salida cruda de VBoxManage.
+# @exitcode 0 El medio esta o quedo en tipo multiattach.
+# @exitcode 3 VBOXDISK_E_STORAGE: tipo no admitido, otra vm lo usa o fallo la conversion.
+# @see storage_attach_medium()
+# @see storage_ensure_detached()
+storage_prepare_multiattach() {
+    local vm="$1" disk="$2" type others out rc=0
+    type="$(storage_medium_type "$disk")"
+    case "$type" in
+        "" | multiattach)
+            return 0
+            ;;
+        normal)
+            ;;
+        *)
+            log_error "$vm: $disk tiene un tipo de medio '$type' no admitido para multiattach"
+            return "$VBOXDISK_E_STORAGE"
+            ;;
+    esac
+    if storage_medium_has_children "$disk"; then
+        log_error "$vm: no se puede convertir $disk en multiattach porque ya tiene imagenes de diferenciacion"
+        return "$VBOXDISK_E_STORAGE"
+    fi
+    others="$(storage_medium_other_users "$disk" "$vm" || true)"
+    if [[ -n "$others" ]]; then
+        log_error "$vm: no se puede convertir $disk en multiattach porque sigue adjunto a otra vm ($others); detengalas y desprenda el disco de todas antes de aplicar"
+        return "$VBOXDISK_E_STORAGE"
+    fi
+    if storage_disk_attached "$vm" "$disk"; then
+        log_info "$vm: desprendiendo $disk para convertirlo en multiattach"
+        storage_ensure_detached "$vm" "$disk" || return $?
+    else
+        # VirtualBox exige que el medio haya estado registrado con una maquina
+        # para admitir el tipo multiattach: se adjunta y se desprende una vez.
+        log_info "$vm: registrando $disk como medio de la maquina para multiattach"
+        storage_attach_medium "$vm" "$disk" "" || return $?
+        storage_ensure_detached "$vm" "$disk" || return $?
+    fi
+    out="$(VBoxManage modifymedium disk "$disk" --type multiattach 2>&1)" || rc=$?
+    log_raw "$out"
+    if ((rc != 0)); then
+        log_error "$vm: no se pudo convertir $disk en multiattach"
+        return "$VBOXDISK_E_STORAGE"
+    fi
+    log_info "$vm: $disk quedo marcado como multiattach"
+    return 0
+}
+
+# @description Ajusta la capacidad de un disco multiattach. Una imagen de
+# diferenciación no crece con el medio base, de modo que la ampliación solo se
+# admite mientras no exista ninguna; si ya las hay, la corrida se detiene con
+# un motivo claro.
+# @arg $1 string Nombre de la vm en el hipervisor.
+# @arg $2 path Ruta del fichero del medio base.
+# @arg $3 int Tamano declarado en MB.
+# @stderr log_error y los registros de storage_ensure_size().
+# @exitcode 0 La capacidad coincide, se amplio o no se pudo medir.
+# @exitcode 3 VBOXDISK_E_STORAGE: reduccion, ampliacion con hijas o fallo al ampliar.
+# @see storage_ensure_size()
+# @see storage_medium_has_children()
+storage_ensure_multiattach_size() {
+    local vm="$1" disk="$2" declared="$3" cap
+    [[ -f "$disk" ]] || return 0
+    [[ "$declared" =~ ^[0-9]+$ ]] && ((declared > 0)) || return 0
+    cap="$(storage_medium_capacity "$disk" || true)"
+    [[ "$cap" =~ ^[0-9]+$ ]] || return 0
+    if ((declared == cap)); then
+        return 0
+    fi
+    if ((declared < cap)); then
+        log_error "$vm: lo declarado ($declared MB) es menor que el medio actual ($cap MB); VirtualBox no admite reducir un medio"
+        return "$VBOXDISK_E_STORAGE"
+    fi
+    if storage_medium_has_children "$disk"; then
+        log_error "$vm: $disk es multiattach y ya tiene imagenes de diferenciacion; no se puede ampliar de $cap a $declared MB"
+        return "$VBOXDISK_E_STORAGE"
+    fi
+    if [[ -n "$(storage_medium_other_users "$disk" "$vm" || true)" ]]; then
+        log_error "$vm: no se puede ampliar $disk mientras otra vm lo usa; detengalas y desprenda el disco de todas antes de aplicar"
+        return "$VBOXDISK_E_STORAGE"
+    fi
+    storage_ensure_size "$vm" "$disk" "$declared"
+}
+
 # @description Crea y adjunta el disco declarativo. Si el fichero ya existe solo
 # se ajusta a su tamano declarado (si hace falta) y se adjunta; si la vm esta
 # encendida exige confirmacion, porque la adjuncion implica detener la maquina
 # (el llamador la vuelve a encender despues). Una ampliacion de capacidad no
-# exige confirmacion: se detiene la maquina sin preguntar.
+# exige confirmacion: se detiene la maquina sin preguntar. En modo multiattach
+# el medio base se marca como tal y cada vm recibe su propia imagen de
+# diferenciación; si state.lock conserva una imagen de esa vm y sigue
+# perteneciendo al medio base, se reutiliza para no perder sus escrituras.
 # @arg $1 string Nombre de la vm en el hipervisor.
 # @arg $2 path Ruta del fichero .vdi a crear y adjuntar.
 # @arg $3 int Tamano declarado del disco en MB.
+# @arg $4 int Modo multiattach: 1 para compartir, 0 para disco normal; por defecto 0.
+# @arg $5 string Clave del disco en el archivo declarativo, para reutilizar la
+#  imagen de diferenciación registrada; opcional.
 # @stderr log_info, log_warn y log_error, mas la salida cruda de VBoxManage.
 # @exitcode 0 El disco ya estaba adjunto o quedo creado, ampliado y adjunto.
 # @exitcode 2 VBOXDISK_E_COMM: no se pudo detener la maquina para adjuntar o ampliar.
@@ -376,18 +750,40 @@ storage_ensure_size() {
 # @exitcode 4 VBOXDISK_E_CANCEL: el usuario rechazo la confirmacion.
 # @see confirm()
 # @see storage_ensure_size()
-# @see storage_pick_port()
+# @see storage_prepare_multiattach()
+# @see storage_attach_medium()
 storage_ensure_medium() {
-    local vm="$1" disk="$2" size_mb="$3"
-    local was_running=0 pick ctl port state out rc
+    local vm="$1" disk="$2" size_mb="$3" multiattach="${4:-0}" disk_key="${5:-}"
+    local was_running=0 state out rc type effective
 
     if [[ -f "$disk" ]]; then
-        storage_ensure_size "$vm" "$disk" "$size_mb" || return "$?"
+        type="$(storage_medium_type "$disk")"
+        if ((multiattach)); then
+            if [[ -n "$type" && "$type" != "normal" && "$type" != "multiattach" ]]; then
+                log_error "$vm: $disk tiene un tipo de medio '$type' no admitido para multiattach"
+                return "$VBOXDISK_E_STORAGE"
+            fi
+            storage_ensure_multiattach_size "$vm" "$disk" "$size_mb" || return $?
+        else
+            if [[ "$type" == "multiattach" ]]; then
+                log_error "$vm: $disk es un medio multiattach; declare 'multiattach: true' o conviertalo manualmente"
+                return "$VBOXDISK_E_STORAGE"
+            fi
+            storage_ensure_size "$vm" "$disk" "$size_mb" || return $?
+        fi
     fi
 
     if storage_disk_attached "$vm" "$disk"; then
-        log_info "$vm: el disco declarado ya esta adjunto ($disk)"
-        return 0
+        if ((multiattach)); then
+            type="$(storage_medium_type "$disk")"
+            if [[ -z "$type" || "$type" == "multiattach" ]]; then
+                log_info "$vm: el disco declarado ya esta adjunto ($disk)"
+                return 0
+            fi
+        else
+            log_info "$vm: el disco declarado ya esta adjunto ($disk)"
+            return 0
+        fi
     fi
 
     state="$(vbox_power_state "$vm" || true)"
@@ -404,7 +800,11 @@ storage_ensure_medium() {
             return "$VBOXDISK_E_STORAGE"
         fi
         mkdir -p "$(dirname "$disk")"
-        log_info "$vm: creando el disco virtual $disk (${size_mb} MB, formato VDI)"
+        if ((multiattach)); then
+            log_info "$vm: creando el disco virtual $disk (${size_mb} MB, formato VDI, multiattach)"
+        else
+            log_info "$vm: creando el disco virtual $disk (${size_mb} MB, formato VDI)"
+        fi
         rc=0
         out="$(VBoxManage createmedium disk --filename "$disk" --size "$size_mb" --format VDI 2>&1)" || rc=$?
         log_raw "$out"
@@ -422,20 +822,17 @@ storage_ensure_medium() {
         fi
     fi
 
-    pick="$(storage_pick_port "$vm")" || return "$?"
-    ctl="${pick% *}"
-    port="${pick##* }"
-    if ! storage_ensure_portcount "$vm" "$ctl" "$port"; then
-        return "$VBOXDISK_E_STORAGE"
-    fi
-    log_info "$vm: adjuntando $disk en el controlador $ctl, puerto $port"
-    rc=0
-    out="$(VBoxManage storageattach "$vm" --storagectl "$ctl" \
-        --port "$port" --device 0 --type hdd --medium "$disk" 2>&1)" || rc=$?
-    log_raw "$out"
-    if ((rc != 0)); then
-        log_error "$vm: fallo al adjuntar $disk en $ctl-$port"
-        return "$VBOXDISK_E_STORAGE"
+    if ((multiattach)); then
+        storage_prepare_multiattach "$vm" "$disk" || return $?
+        effective="$(storage_effective_medium "$vm" "$disk_key" "$disk")"
+        if [[ -n "$effective" && "$effective" != "$disk" ]]; then
+            log_info "$vm: reutilizando la imagen de diferenciacion $effective"
+            storage_attach_medium "$vm" "$effective" "" || return $?
+        else
+            storage_attach_medium "$vm" "$disk" "multiattach" || return $?
+        fi
+    else
+        storage_attach_medium "$vm" "$disk" "" || return $?
     fi
     return 0
 }
@@ -496,13 +893,27 @@ storage_ensure_detached() {
 # @exitcode 0 Medio cerrado y fichero borrado (o el fichero ya no existia).
 # @exitcode 3 VBOXDISK_E_STORAGE: fichero no admitido, sigue adjunto, es la configuracion de la vm o fallo al eliminar.
 storage_delete_medium() {
-    local vm="$1" disk="$2" cfg out rc
+    local vm="$1" disk="$2" cfg out rc others declared
     if [[ "$disk" != *.vdi ]]; then
         log_error "$vm: se niega a eliminar $disk: solo se admiten ficheros .vdi de datos"
         return "$VBOXDISK_E_STORAGE"
     fi
     if storage_disk_attached "$vm" "$disk"; then
         log_error "$vm: se niega a eliminar $disk porque sigue adjunto a la maquina"
+        return "$VBOXDISK_E_STORAGE"
+    fi
+    declared="$(storage_medium_declared_elsewhere "$disk" "$vm" || true)"
+    if [[ -n "$declared" ]]; then
+        log_error "$vm: se niega a eliminar $disk porque sigue declarado en otra vm: $declared"
+        return "$VBOXDISK_E_STORAGE"
+    fi
+    others="$(storage_medium_other_users "$disk" "$vm" || true)"
+    if [[ -n "$others" ]]; then
+        log_error "$vm: se niega a eliminar $disk porque lo usa otra vm: $others"
+        return "$VBOXDISK_E_STORAGE"
+    fi
+    if storage_medium_has_children "$disk"; then
+        log_error "$vm: se niega a eliminar $disk porque tiene imagenes de diferenciacion"
         return "$VBOXDISK_E_STORAGE"
     fi
     cfg="$(vbox_info "$vm" CfgFile || true)"
@@ -559,9 +970,9 @@ storage_orphan_disks() {
 # @see cfg_disk_get()
 storage_disk_changes() {
     local vm="$1" disk="$2" modo="${3:-largo}"
-    local i out="" s_state decl_file
-    local -a campos=(size label fs_type mount_point file state)
-    local -a nombres=(tamano etiqueta tipo_ficheros montaje fichero estado)
+    local i out="" s_state decl_file s_ma d_ma
+    local -a campos=(size label fs_type mount_point file state multiattach)
+    local -a nombres=(tamano etiqueta tipo_ficheros montaje fichero estado multiattach)
     local -a viejos nuevos
 
     s_state="$(state_get_disk "$vm" "$disk" state || true)"
@@ -569,6 +980,12 @@ storage_disk_changes() {
         return 0
     fi
     decl_file="$(storage_disk_file "$vm" "$disk" || true)"
+    s_ma="$(state_get_disk "$vm" "$disk" multiattach || true)"
+    if cfg_disk_multiattach "$vm" "$disk"; then
+        d_ma=true
+    else
+        d_ma=false
+    fi
     viejos=(
         "$(state_get_disk "$vm" "$disk" size_mb || true)"
         "$(state_get_disk "$vm" "$disk" label || true)"
@@ -576,6 +993,7 @@ storage_disk_changes() {
         "$(state_get_disk "$vm" "$disk" mount_point || true)"
         "$(state_get_disk "$vm" "$disk" file || true)"
         "$s_state"
+        "${s_ma:-false}"
     )
     nuevos=(
         "$(cfg_disk_size_mb "$vm" "$disk" || true)"
@@ -584,6 +1002,7 @@ storage_disk_changes() {
         "$(cfg_disk_get "$vm" "$disk" mount_point)"
         "${decl_file:-${viejos[4]}}"
         "$(cfg_disk_state "$vm" "$disk")"
+        "$d_ma"
     )
     for i in "${!campos[@]}"; do
         [[ "${viejos[$i]}" == "${nuevos[$i]}" ]] && continue
@@ -613,12 +1032,17 @@ storage_disk_changes() {
 # @see storage_medium_capacity()
 storage_pending_work() {
     local vm="$1" modo="${2:-largo}"
-    local disk file size fstate cambios cap motivo out=""
+    local disk file size fstate cambios cap motivo out="" ma
     while IFS= read -r disk; do
         [[ -n "$disk" ]] || continue
         fstate="$(cfg_disk_state "$vm" "$disk")"
         file="$(storage_disk_file "$vm" "$disk" || true)"
         size="$(cfg_disk_size_mb "$vm" "$disk" || true)"
+        if cfg_disk_multiattach "$vm" "$disk"; then
+            ma=1
+        else
+            ma=0
+        fi
         if [[ "$fstate" == "inactive" ]]; then
             if [[ "$modo" == "corto" ]]; then
                 motivo="$disk: inactivo"
@@ -661,7 +1085,13 @@ storage_pending_work() {
             cap="$(storage_medium_capacity "$file")" &&
             [[ "$size" =~ ^[0-9]+$ ]] && ((size > 0)); then
             if ((size > cap)); then
-                if [[ "$modo" == "corto" ]]; then
+                if ((ma == 1)) && storage_medium_has_children "$file"; then
+                    if [[ "$modo" == "corto" ]]; then
+                        motivo="$disk: multiattach"
+                    else
+                        motivo="$disk: disco multiattach de $cap MB con imagenes de diferenciacion; no se puede ampliar a $size MB"
+                    fi
+                elif [[ "$modo" == "corto" ]]; then
                     motivo="$disk: tamano"
                 else
                     motivo="$disk: el medio actual es de $cap MB y lo declarado es de $size MB: se ampliara"

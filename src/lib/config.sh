@@ -21,12 +21,19 @@
 # el estado registre para ella queda pendiente de decision; el esquema plano
 # anterior (disk_file, disk_size_mb, disk_device, mount_point, fs_type,
 # fs_label) se rechaza con una indicacion explicita de migracion.
+# Un disco multiattach se declara con su ruta compartida en 'file' y
+# 'multiattach: true' en cada maquina que lo usa: VirtualBox exige el tipo
+# multiattach para adjuntar el mismo medio a varias maquinas encendidas y
+# crea una imagen de diferenciacion privada por maquina. Una vez definido, las
+# demas maquinas pueden mencionarlo solo por su nombre ('datos:'): heredan
+# label, size, fs_type, file y mount_point de la unica definicion multiattach
+# con esa clave y solo pueden sobrescribir mount_point, state y multiattach.
 
 # Claves admitidas y obligatorias de cada bloque de vdisk.yml.
 VBOXDISK_KEYS=(vm_user vm_pass vm_pass_file disks)
 VBOXDISK_REQUIRED=(vm_user)
 # Claves admitidas y obligatorias de cada disco del bloque 'disks'.
-VBOXDISK_DISK_KEYS=(label size fs_type mount_point file state)
+VBOXDISK_DISK_KEYS=(label size fs_type mount_point file state multiattach)
 VBOXDISK_DISK_REQUIRED=(label size fs_type mount_point)
 # Claves del esquema anterior, todavia presentes en archivos antiguos.
 VBOXDISK_LEGACY_KEYS=(disk_file disk_size_mb disk_device mount_point fs_type fs_label)
@@ -115,21 +122,111 @@ cfg_disk_keys() {
     yq -r ".\"${1}\".disks // {} | keys | .[]" "$2" 2>/dev/null || true
 }
 
+# @description Indica si un disco se declara completo (definición) o es una
+# referencia a la definición multiattach de otra vm. Una referencia es un nodo
+# nulo, un mapa vacío o un mapa que solo lleva claves por vm (mount_point,
+# state, multiattach); las claves de identidad (label, size, fs_type, file)
+# convierten el nodo en una definición.
+# @arg $1 string Nombre de la vm.
+# @arg $2 string Clave del disco.
+# @arg $3 path Fichero YAML; por defecto $VBOXDISK_FILE.
+# @exitcode 0 El disco es una definición completa.
+# @exitcode 1 El disco es una referencia o no existe.
+cfg_disk_is_definition() {
+    local vm="$1" disk="$2" file="${3:-$VBOXDISK_FILE}" type key
+    type="$(yq -r ".\"${vm}\".disks.\"${disk}\" | type" "$file" 2>/dev/null || printf 'null')"
+    case "$type" in
+        "!!null")
+            return 1
+            ;;
+        "!!map")
+            while IFS= read -r key; do
+                case "$key" in
+                    label | size | fs_type | file)
+                        return 0
+                        ;;
+                esac
+            done < <(yq -r ".\"${vm}\".disks.\"${disk}\" | keys | .[]" "$file" 2>/dev/null || true)
+            return 1
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+# @description Busca la vm que contiene la definición multiattach de un disco
+# referenciado solo por su nombre. Debe haber exactamente una definición
+# completa con 'multiattach: true' y la misma clave de disco; ninguna o varias
+# se rechazan con log_error.
+# @arg $1 string Nombre de la vm que referencia.
+# @arg $2 string Clave del disco.
+# @arg $3 path Fichero YAML; por defecto $VBOXDISK_FILE.
+# @stdout Nombre de la vm que define el disco, sin salto de linea.
+# @exitcode 0 Se encontro una unica definicion.
+# @exitcode 1 No hay definicion o hay mas de una.
+cfg_disk_reference_source() {
+    local vm="$1" disk="$2" file="${3:-$VBOXDISK_FILE}" out count
+    out="$(yq -r "
+        to_entries[] |
+        select(.value.disks != null) |
+        select(.value.disks.\"${disk}\" != null) |
+        select((.value.disks.\"${disk}\".multiattach // false) == true) |
+        select((.value.disks.\"${disk}\".file // \"\") != \"\") |
+        select((.value.disks.\"${disk}\".label // \"\") != \"\") |
+        select((.value.disks.\"${disk}\".size // \"\") != \"\") |
+        select((.value.disks.\"${disk}\".fs_type // \"\") != \"\") |
+        .key
+    " "$file" 2>/dev/null || true)"
+    count="$(printf '%s\n' "$out" | grep -c . || true)"
+    if ((count == 1)); then
+        printf '%s' "$out"
+        return 0
+    fi
+    if ((count == 0)); then
+        log_error "$vm/$disk: no hay un disco multiattach completo llamado '$disk' que referenciar"
+    else
+        log_error "$vm/$disk: hay varias definiciones multiattach para '$disk' (${out//$'\n'/, }); deje una sola o declare el disco completo"
+    fi
+    return 1
+}
+
 # @description Lee una clave de un disco concreto de una vm.
 # No aplica precedencia de variables de entorno, porque la precedencia rige
-# solo a nivel de máquina.
+# solo a nivel de máquina. Si el disco es una referencia por nombre, las claves
+# de identidad y el punto de montaje se heredan de la única definición
+# multiattach con la misma clave; 'state' es siempre de la vm que referencia.
 # @arg $1 string Nombre de la vm.
 # @arg $2 string Clave del disco dentro de 'disks'.
-# @arg $3 string Clave a leer (label, size, fs_type, mount_point, file, state).
+# @arg $3 string Clave a leer (label, size, fs_type, mount_point, file, state, multiattach).
 # @arg $4 path Fichero YAML; por defecto $VBOXDISK_FILE. El cuarto argumento permite leer un fichero distinto del declarado, que es lo que hace la validación al examinar otro archivo.
 # @stdout El valor o cadena vacía si la clave no existe.
 # @exitcode 0 Siempre.
 cfg_disk_get() {
-    local vm="$1" disk="$2" key="$3" file="${4:-$VBOXDISK_FILE}" val
-    val="$(yq -r ".\"${vm}\".disks.\"${disk}\".\"${key}\" // \"\"" "$file")"
+    local vm="$1" disk="$2" key="$3" file="${4:-$VBOXDISK_FILE}" val source
+    val="$(yq -r ".\"${vm}\".disks.\"${disk}\".\"${key}\"" "$file")"
     if [[ "$val" == "null" ]]; then
         val=""
     fi
+    if [[ -n "$val" ]]; then
+        printf '%s' "$val"
+        return 0
+    fi
+    if cfg_disk_is_definition "$vm" "$disk" "$file"; then
+        printf '%s' "$val"
+        return 0
+    fi
+    case "$key" in
+        label | size | fs_type | file | mount_point | multiattach)
+            source="$(cfg_disk_reference_source "$vm" "$disk" "$file" 2>/dev/null || true)"
+            if [[ -n "$source" ]]; then
+                val="$(yq -r ".\"${source}\".disks.\"${disk}\".\"${key}\" // \"\"" "$file")"
+                if [[ "$val" == "null" ]]; then
+                    val=""
+                fi
+            fi
+            ;;
+    esac
     printf '%s' "$val"
 }
 
@@ -157,6 +254,19 @@ cfg_disk_state() {
     local st
     st="$(cfg_disk_get "$1" "$2" state)"
     printf '%s' "${st:-active}"
+}
+
+# @description Indica si un disco se declara en modo multiattach, ya sea en su
+# definición completa o heredado de la definición que referencia por nombre.
+# El cuarto argumento permite consultar el archivo que se está validando en
+# lugar del global VBOXDISK_FILE.
+# @arg $1 string Nombre de la vm.
+# @arg $2 string Clave del disco.
+# @arg $3 path Fichero YAML opcional; por defecto $VBOXDISK_FILE.
+# @exitcode 0 El disco declara 'multiattach: true'.
+# @exitcode 1 La clave falta, vale false o el disco no existe.
+cfg_disk_multiattach() {
+    [[ "$(cfg_disk_get "$1" "$2" multiattach "${3:-$VBOXDISK_FILE}")" == "true" ]]
 }
 
 # @description Comprueba existencia, lectura y sintaxis YAML de un fichero declarativo.
@@ -289,8 +399,11 @@ cfg_validate_credentials() {
 # caracteres en xfs, 16 en ext4), size legible, fs_type (ext4|xfs),
 # mount_point absoluto distinto de '/', file absoluto y state
 # (active|inactive). Los discos 'inactive' no participan en la unicidad de
-# montaje. Acumula los errores y sigue con el disco siguiente; si a un disco
-# le falta una clave obligatoria se omiten el resto de sus comprobaciones.
+# montaje. Una referencia por nombre (nodo nulo o solo con
+# mount_point/state/multiattach) se resuelve contra la única definición
+# multiattach con esa clave y hereda label, size, fs_type y file. Acumula los errores y sigue con el disco
+# siguiente; si a un disco le falta una clave obligatoria se omiten el resto de
+# sus comprobaciones.
 # @arg $1 string Nombre de la vm.
 # @arg $2 path Fichero YAML del que leer.
 # @stderr Un log_error por cada defecto detectado.
@@ -298,7 +411,7 @@ cfg_validate_credentials() {
 # @exitcode 1 Algún disco tiene defectos.
 cfg_validate_disks() {
     local vm="$1" file="$2" disk dkey rc=0
-    local label size fs mount fstate path
+    local label size fs mount fstate path ma is_ref
     local -A labels=() mounts=()
     while IFS= read -r disk; do
         [[ -n "$disk" ]] || continue
@@ -320,18 +433,48 @@ cfg_validate_disks() {
         mount="$(cfg_disk_get "$vm" "$disk" mount_point "$file")"
         fstate="$(cfg_disk_get "$vm" "$disk" state "$file")"
         path="$(cfg_disk_get "$vm" "$disk" file "$file")"
+        ma="$(cfg_disk_get "$vm" "$disk" multiattach "$file")"
+        if cfg_disk_is_definition "$vm" "$disk" "$file"; then
+            is_ref=0
+        else
+            is_ref=1
+        fi
 
-        local key missing=""
-        for key in "${VBOXDISK_DISK_REQUIRED[@]}"; do
-            if [[ -z "$(cfg_disk_get "$vm" "$disk" "$key" "$file")" ]]; then
-                missing="$key"
-                break
+        if ((is_ref)); then
+            while IFS= read -r dkey; do
+                [[ -n "$dkey" ]] || continue
+                case "$dkey" in
+                    mount_point | state)
+                        ;;
+                    multiattach)
+                        if [[ "$ma" != "true" ]]; then
+                            log_error "$vm/$disk: una referencia multiattach no puede declarar 'multiattach: false'"
+                            rc=1
+                        fi
+                        ;;
+                    *)
+                        log_error "$vm/$disk: una referencia multiattach solo puede declarar 'mount_point', 'state' y 'multiattach' (clave: $dkey)"
+                        rc=1
+                        ;;
+                esac
+            done < <(yq -r ".\"${vm}\".disks.\"${disk}\" | keys | .[]" "$file" 2>/dev/null || true)
+            if ! cfg_disk_reference_source "$vm" "$disk" "$file" >/dev/null; then
+                rc=1
+                continue
             fi
-        done
-        if [[ -n "$missing" ]]; then
-            log_error "$vm/$disk: falta la clave obligatoria '$missing'"
-            rc=1
-            continue
+        else
+            local key missing=""
+            for key in "${VBOXDISK_DISK_REQUIRED[@]}"; do
+                if [[ -z "$(cfg_disk_get "$vm" "$disk" "$key" "$file")" ]]; then
+                    missing="$key"
+                    break
+                fi
+            done
+            if [[ -n "$missing" ]]; then
+                log_error "$vm/$disk: falta la clave obligatoria '$missing' (para referenciar un disco multiattach por su nombre deje el nodo vacio o declare solo mount_point/state)"
+                rc=1
+                continue
+            fi
         fi
         if [[ ! "$label" =~ ^[A-Za-z0-9._-]+$ ]]; then
             log_error "$vm/$disk: 'label' solo admite [A-Za-z0-9._-] (valor: $label)"
@@ -359,6 +502,14 @@ cfg_validate_disks() {
             log_error "$vm/$disk: 'file' debe ser una ruta absoluta (valor: $path)"
             rc=1
         fi
+        if [[ -n "$ma" && "$ma" != "true" && "$ma" != "false" ]]; then
+            log_error "$vm/$disk: 'multiattach' debe ser true o false (valor: $ma)"
+            rc=1
+        fi
+        if [[ "$ma" == "true" && -z "$path" ]]; then
+            log_error "$vm/$disk: 'multiattach' exige declarar 'file' con la ruta del disco compartido"
+            rc=1
+        fi
         if [[ -n "$fstate" && "$fstate" != "active" && "$fstate" != "inactive" ]]; then
             log_error "$vm/$disk: 'state' debe ser active o inactive (valor: $fstate)"
             rc=1
@@ -376,6 +527,84 @@ cfg_validate_disks() {
             mounts[$mount]="$disk"
         fi
     done < <(cfg_disk_keys "$vm" "$file")
+    return "$rc"
+}
+
+# @description Valida el uso compartido de un mismo fichero de disco entre
+# varias vm. Un fichero declarado por más de una vm debe llevar
+# 'multiattach: true' en todas ellas y coincidir en tamaño, sistema de
+# archivos y etiqueta; el punto de montaje puede diferir porque cada vm ve su
+# propia imagen de diferenciación. También rechaza que una misma vm declare el
+# mismo fichero en dos discos. Los errores se acumulan y se emiten con
+# log_error.
+# @arg $1 path Fichero YAML a examinar.
+# @stderr Un log_error por cada fichero compartido mal declarado.
+# @exitcode 0 No hay ficheros compartidos o todos son coherentes.
+# @exitcode 1 Algún fichero compartido incumple las reglas.
+cfg_validate_shared_disks() {
+    local file="$1" msg rc=0
+    while IFS= read -r msg; do
+        [[ -n "$msg" ]] || continue
+        log_error "$msg"
+        rc=1
+    done < <(
+        # shellcheck disable=SC2016  # las variables $vm son del lenguaje de yq.
+        yq -r '
+            to_entries[] as $vm |
+            select(($vm.value.disks | type) == "!!map") |
+            $vm.value.disks | to_entries[] |
+            select((.value | type) == "!!map" or (.value | type) == "!!null") |
+            [$vm.key, .key] |
+            @tsv
+        ' "$file" |
+            while IFS=$'\t' read -r vm_name disk; do
+                [[ -n "$vm_name" && -n "$disk" ]] || continue
+                path="$(cfg_disk_get "$vm_name" "$disk" file "$file")"
+                [[ -n "$path" ]] || continue
+                size="$(size_to_mb "$(cfg_disk_get "$vm_name" "$disk" size "$file")" || true)"
+                fs="$(cfg_disk_get "$vm_name" "$disk" fs_type "$file")"
+                label="$(cfg_disk_get "$vm_name" "$disk" label "$file")"
+                if cfg_disk_multiattach "$vm_name" "$disk" "$file"; then
+                    ma=true
+                else
+                    ma=false
+                fi
+                printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+                    "$path" "$vm_name" "$disk" "$size" "$fs" "$label" "$ma"
+            done |
+            LC_ALL=C sort -t$'\t' -k1,1 |
+            awk -F'\t' '
+                {
+                    path = $1; vm = $2; disk = $3; size = $4
+                    fs = $5; label = $6; ma = $7
+                    if (path != prev) {
+                        prev = path; pvm = vm; pdisk = disk
+                        psize = size; pfs = fs; plabel = label; pma = ma
+                        lvm = vm; lwho = vm "/" disk
+                        next
+                    }
+                    who = vm "/" disk
+                    pwho = pvm "/" pdisk
+                    if (vm == lvm) {
+                        print vm ": el fichero \047" path "\047 se declara en mas de un disco (" lwho " y " who ")"
+                        lwho = who
+                        next
+                    }
+                    lvm = vm
+                    lwho = who
+                    if (pma != "true" || ma != "true") {
+                        print who ": el fichero \047" path "\047 se comparte con " pwho "; declare \047multiattach: true\047 en todos los discos que lo usan"
+                    }
+                    diffs = ""
+                    if (size != psize) diffs = diffs " tamano (" psize " -> " size ")"
+                    if (fs != pfs) diffs = diffs " fs_type (" pfs " -> " fs ")"
+                    if (label != plabel) diffs = diffs " label (" plabel " -> " label ")"
+                    if (diffs != "") {
+                        print who ": el fichero \047" path "\047 se comparte con " pwho " y difiere en" diffs
+                    }
+                }
+            '
+    )
     return "$rc"
 }
 
@@ -403,6 +632,7 @@ cfg_validate() {
         cfg_validate_credentials "$vm" "$file" || errors=1
         cfg_validate_disks "$vm" "$file" || errors=1
     done
+    cfg_validate_shared_disks "$file" || errors=1
     if ((errors != 0)); then
         return 1
     fi
@@ -524,7 +754,7 @@ cfg_sync_vm() {
 # @see state_get_disk()
 cfg_sync_disk() {
     local vm="$1" disk="$2"
-    local size label fs mount file
+    local size label fs mount file ma
     if [[ ! "$vm" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] ||
         [[ ! "$disk" =~ ^[A-Za-z0-9._-]+$ ]] || ((${#disk} > 32)); then
         log_error "$vm/$disk: clave no admitida para sincronizar"
@@ -535,6 +765,7 @@ cfg_sync_disk() {
     fs="$(state_get_disk "$vm" "$disk" fs_type || true)"
     mount="$(state_get_disk "$vm" "$disk" mount_point || true)"
     file="$(state_get_disk "$vm" "$disk" file || true)"
+    ma="$(state_get_disk "$vm" "$disk" multiattach || true)"
     if [[ -z "$size" || -z "$label" || -z "$fs" || -z "$mount" ]]; then
         log_error "$vm/$disk: el registro de state.lock no guarda tamano, etiqueta, tipo de ficheros y montaje"
         return 1
@@ -554,6 +785,13 @@ cfg_sync_disk() {
         YQ_P="$file" yq -i ".\"${vm}\".disks.\"${disk}\".file = strenv(YQ_P)" \
             "$VBOXDISK_SYNC_TMP" || {
             log_error "$vm/$disk: yq no pudo declarar el fichero del disco"
+            return 1
+        }
+    fi
+    if [[ "$ma" == "true" ]]; then
+        yq -i ".\"${vm}\".disks.\"${disk}\".multiattach = true" \
+            "$VBOXDISK_SYNC_TMP" || {
+            log_error "$vm/$disk: yq no pudo declarar el modo multiattach"
             return 1
         }
     fi

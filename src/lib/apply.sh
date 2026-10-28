@@ -402,7 +402,7 @@ record_medium_size() {
 apply_vm() {
     local vm="$1"
     local desired stored fp stored_fp power rc=0 ip ready_t=0
-    local disk file size fstate att uuid drift=0 declared_vm=1 prompt cambios
+    local disk file size fstate att uuid drift=0 declared_vm=1 prompt cambios mm ma diff others
     local -a declared=() orphans=() todo_active=() todo_release=() todo_delete=()
     local -a todo_sync=()
     local -a kv=()
@@ -573,7 +573,11 @@ apply_vm() {
         # Antes: si el medio cambio por fuera desde la ultima corrida, el
         # registro se corrige aunque la comprobacion siguiente lo rechace.
         record_medium_size "$vm" "$disk" "$file"
-        storage_ensure_medium "$vm" "$file" "$size" || rc=$?
+        if cfg_disk_multiattach "$vm" "$disk"; then
+            storage_ensure_medium "$vm" "$file" "$size" 1 "$disk" || rc=$?
+        else
+            storage_ensure_medium "$vm" "$file" "$size" 0 "$disk" || rc=$?
+        fi
         # Despues: esta corrida pudo ampliar el medio, y hasta aqui no lo
         # refleja ningun registro.
         record_medium_size "$vm" "$disk" "$file"
@@ -713,6 +717,25 @@ apply_vm() {
             return "$rc"
         fi
         if in_list "$disk" "${todo_delete[@]}"; then
+            # Un disco multiattach tiene una imagen de diferenciación privada
+            # por vm. Antes de borrar el medio base se comprueba que ninguna
+            # otra vm lo use y se elimina la imagen privada de esta vm; así el
+            # medio base solo desaparece cuando ya no queda nadie detrás.
+            others="$(storage_medium_other_users "$file" "$vm" || true)"
+            if [[ -n "$others" ]]; then
+                log_error "$vm/$disk: no se puede eliminar el disco compartido; lo usan: $others"
+                stage_end "$VBOXDISK_E_STORAGE"
+                return "$VBOXDISK_E_STORAGE"
+            fi
+            diff="$(state_get_disk "$vm" "$disk" medium_file || true)"
+            if [[ -n "$diff" && "$diff" != "$file" ]]; then
+                rc=0
+                storage_delete_medium "$vm" "$diff" || rc=$?
+                if ((rc != 0)); then
+                    stage_end "$rc"
+                    return "$rc"
+                fi
+            fi
             rc=0
             storage_delete_medium "$vm" "$file" || rc=$?
             if ((rc != 0)); then
@@ -736,11 +759,23 @@ apply_vm() {
         att="$(storage_attachment "$vm" "$file" || true)"
         uuid="$(storage_medium_uuid "$vm" "$file" || true)"
         guest_restore "$vm" "$disk"
+        if cfg_disk_multiattach "$vm" "$disk"; then
+            mm="$(storage_attached_medium "$vm" "$file" || true)"
+            if [[ -z "$mm" ]]; then
+                mm="$(state_get_disk "$vm" "$disk" medium_file || true)"
+            fi
+            ma=true
+        else
+            mm=""
+            ma=false
+        fi
         kv+=(
             "disks.$disk.state=active"
             "disks.$disk.desired_hash=$(storage_disk_desired_hash "$vm" "$disk")"
             "disks.$disk.fingerprint=$(storage_disk_fingerprint "$vm" "$file")"
             "disks.$disk.file=$file"
+            "disks.$disk.medium_file=$mm"
+            "disks.$disk.multiattach=$ma"
             "disks.$disk.port=${att##* }"
             "disks.$disk.uuid=$uuid"
             "disks.$disk.size_mb=$size"
@@ -761,7 +796,12 @@ apply_vm() {
             continue
         fi
         file="$(storage_disk_file "$vm" "$disk" || true)"
-        kv+=("disks.$disk.state=inactive")
+        if cfg_disk_multiattach "$vm" "$disk"; then
+            ma=true
+        else
+            ma=false
+        fi
+        kv+=("disks.$disk.state=inactive" "disks.$disk.multiattach=$ma")
         if [[ -n "$file" ]]; then
             kv+=("disks.$disk.file=$file")
         fi
